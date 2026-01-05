@@ -1,6 +1,6 @@
-# MAUI .NET9.0/NET10.0 Environment Toolchain Switcher
+# MAUI .NET9.0/NET10.0 Environment Toolchain Switcher for MacOS
 
-This repo provides `zsh` helpers for MAUI app developers working on the .NET 9 and 10 solutions in parallel, and require the ability to jump between them and have their environment function properly.
+This repo provides `zsh` helpers for MAUI app developers working on the .NET 9 and 10 solutions in parallel, and require the ability to jump between them and have their MacOS environment function properly.
 
 Purpose:
 
