@@ -149,8 +149,11 @@ By default it also:
 
 And it manages .NET 10 SDK visibility:
 
-- When switching to .NET 9: moves `/usr/local/share/dotnet/sdk/10.*` and `/usr/local/share/dotnet/sdk-manifests/10.*` into a disabled storage directory.
-- When switching to .NET 10: moves those folders back.
+- When switching to .NET 9: moves `10.*` folders out of:
+	- `$DOTNETENV_DOTNET_ROOT/sdk`
+	- `$DOTNETENV_DOTNET_ROOT/sdk-manifests`
+	into `$DOTNETENV_DISABLED_DIR` (defaults to `$DOTNETENV_DOTNET_ROOT/.env-switcher-disabled`).
+- When switching to .NET 10: moves those folders back into the dotnet root.
 	- This may prompt for `sudo` depending on permissions.
 
 ## Usage
@@ -174,6 +177,26 @@ If your dotnet install root is not `/usr/local/share/dotnet`, or you want to con
 
 - `export DOTNETENV_DOTNET_ROOT="/usr/local/share/dotnet"`
 - `export DOTNETENV_DISABLED_DIR="/usr/local/share/dotnet/.env-switcher-disabled"`
+
+If `DOTNETENV_DOTNET_ROOT` is not set, the scripts will auto-detect the dotnet install root based on `command -v dotnet` (resolving symlinks).
+
+#### Example output
+
+When switching to .NET 9 (disabling .NET 10 SDK folders), you should see output like:
+
+```text
+Disabling .NET 10 SDK folders (moving '10.*' out of dotnet root): /usr/local/share/dotnet
+.NET SDK (10.*): moved 1 folder(s).
+SDK manifests (10.*): moved 2 folder(s).
+```
+
+When switching to .NET 10 (re-enabling), you should see:
+
+```text
+Enabling .NET 10 SDK folders (moving '10.*' back into dotnet root): /usr/local/share/dotnet
+.NET SDK (10.*): moved 1 folder(s).
+SDK manifests (10.*): moved 2 folder(s).
+```
 
 ## Quick verification
 

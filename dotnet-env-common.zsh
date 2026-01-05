@@ -58,8 +58,26 @@ EOF
 }
 
 __dotnetenv_dotnet_root() {
-  local root="${DOTNETENV_DOTNET_ROOT:-/usr/local/share/dotnet}"
-  print -r -- "$root"
+  local root="${DOTNETENV_DOTNET_ROOT:-}"
+  if [[ -n "${root:-}" ]]; then
+    print -r -- "$root"
+    return 0
+  fi
+
+  # Prefer resolving the dotnet binary location, since Homebrew and the official
+  # installer can install into different prefixes (/usr/local vs /opt/homebrew).
+  if command -v dotnet >/dev/null 2>&1; then
+    local dotnet_bin resolved
+    dotnet_bin="$(command -v dotnet)"
+    # :A resolves to an absolute path and resolves symlinks in zsh.
+    resolved="${dotnet_bin:A}"
+    root="$(dirname -- "$resolved")"
+    print -r -- "$root"
+    return 0
+  fi
+
+  # Fallback (most common on Intel Macs).
+  print -r -- "/usr/local/share/dotnet"
 }
 
 __dotnetenv_disabled_root() {
@@ -90,7 +108,9 @@ __dotnetenv_mkdir_p() {
 
 __dotnetenv_move_matching_dirs() {
   emulate -L zsh
+  setopt extended_glob
   setopt null_glob
+  unsetopt nomatch
 
   local src_base="$1"
   local dst_base="$2"
@@ -109,8 +129,12 @@ __dotnetenv_move_matching_dirs() {
   fi
 
   local -a matches
-  matches=("$src_base"/${pattern}(/N))
+  # Use ${~pattern} so the pattern string is treated as a glob pattern.
+  # (Without this, a pattern coming from a variable may not behave as expected
+  # under certain option sets.)
+  matches=("$src_base"/${~pattern}(N/))
   if (( ${#matches} == 0 )); then
+    print -r -- "$label: no matching folders found in '$src_base' (pattern: ${pattern})."
     return 0
   fi
 
