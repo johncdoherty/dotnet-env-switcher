@@ -352,8 +352,20 @@ __dotnetenv_maybe_xcode_select() {
     return 1
   fi
 
+  local before after
+  before="$(xcode-select -p 2>/dev/null)"
+
+  print -r -- ""
+  print -r -- "xcode-select (global) before: ${before:-<unknown>}"
   __dotnetenv_warn "Running: sudo xcode-select -s '$DEVELOPER_DIR'"
-  sudo xcode-select -s "$DEVELOPER_DIR"
+  sudo xcode-select -s "$DEVELOPER_DIR" || return $?
+
+  after="$(xcode-select -p 2>/dev/null)"
+  print -r -- "xcode-select (global) after:  ${after:-<unknown>}"
+
+  if [[ -n "${after:-}" && "$after" != "$DEVELOPER_DIR" ]]; then
+    __dotnetenv_warn "Global xcode-select path does not match DEVELOPER_DIR. Some tools may still resolve Xcode differently."
+  fi
 }
 
 __dotnetenv_print_status() {
@@ -361,6 +373,12 @@ __dotnetenv_print_status() {
   print -r -- "Toolchain status:"
   print -r -- "  JAVA_HOME     = ${JAVA_HOME:-<unset>}"
   print -r -- "  DEVELOPER_DIR = ${DEVELOPER_DIR:-<unset>}"
+
+  if command -v xcode-select >/dev/null 2>&1; then
+    local xcode_global
+    xcode_global="$(xcode-select -p 2>/dev/null)"
+    print -r -- "  xcode-select -p (global) = ${xcode_global:-<unknown>}"
+  fi
 
   if command -v java >/dev/null 2>&1; then
     print -r -- ""

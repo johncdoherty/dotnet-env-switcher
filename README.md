@@ -42,6 +42,11 @@ Common usage (Typically run from a .NET solution folder in VSCode):
 - `use-dotnet9`
 - `use-dotnet10 --no-select-xcode` (avoids `sudo xcode-select ...`)
 
+Notes:
+
+- Don’t run `sudo use-dotnet9` / `sudo use-dotnet10`. These are typically shell functions that `source` the scripts; `sudo` won’t have those functions and (even if it did) environment exports won’t persist back to your shell.
+- The scripts will prompt for `sudo` internally when needed (for `xcode-select` and sometimes for moving dotnet SDK folders).
+
 ## Install / setup
 
 These scripts are meant to be “installed” by putting the folder somewhere stable on your machine and adding a couple functions to your shell profile so you can run them from anywhere.
@@ -130,6 +135,7 @@ On success, it prints a small status block showing the chosen toolchain:
 
 - `JAVA_HOME` (and ensures `$JAVA_HOME/bin` is first in `PATH`)
 - `DEVELOPER_DIR`
+- `xcode-select -p` (the global/system-wide Xcode selection)
 
 By default it also:
 
@@ -175,8 +181,16 @@ After switching, these should all reflect the expected environment:
 
 - `echo $JAVA_HOME`
 - `echo $DEVELOPER_DIR`
+- `xcode-select -p`  (global)
 - `java -version`
 - `xcodebuild -version`
+
+### About Xcode switching (global vs shell-local)
+
+- `DEVELOPER_DIR` affects many tools *in the current shell session* (including `xcodebuild`).
+- `sudo xcode-select -s ...` changes the *global/system-wide* developer directory (what `xcode-select -p` prints).
+
+If you want to confirm the system-wide change actually took effect, rely on `xcode-select -p` in a fresh terminal.
 
 If you’re using VS Code, the most reliable flow is:
 
