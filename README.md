@@ -1,6 +1,6 @@
 # MAUI .NET9.0/NET10.0 Environment Toolchain Switcher
 
-This reop provids `zsh` helpers for MAUI app developers working on the .NET 9 and 10 solutions in parallel, and require the ability to jump between them and have their environment function properly.
+This repo provides `zsh` helpers for MAUI app developers working on the .NET 9 and 10 solutions in parallel, and require the ability to jump between them and have their environment function properly.
 
 Purpose:
 
@@ -15,6 +15,13 @@ Non-goals:
 
 - `use-dotnet9.zsh`: sets `JAVA_HOME` to JDK 17 and `DEVELOPER_DIR` to Xcode 16.4
 - `use-dotnet10.zsh`: sets `JAVA_HOME` to JDK 21 and `DEVELOPER_DIR` to Xcode 26.1 (override as needed)
+
+Additionally:
+
+- `use-dotnet9.zsh` disables discovery of `.NET 10` SDKs by moving `10.*` folders out of the dotnet install root.
+- `use-dotnet10.zsh` re-enables `.NET 10` SDKs by moving those `10.*` folders back.
+
+This is specifically to work around tooling/debugger behavior that breaks for .NET 9 apps when .NET 10 is installed.
 
 ## TL;DR
 
@@ -134,6 +141,12 @@ By default it also:
 		- Retries with `sudo` if dotnet reports inadequate permissions
 	- Deletes all `bin/` and `obj/` folders recursively (skipping `.git/.vs/.idea/node_modules`)
 
+And it manages .NET 10 SDK visibility:
+
+- When switching to .NET 9: moves `/usr/local/share/dotnet/sdk/10.*` and `/usr/local/share/dotnet/sdk-manifests/10.*` into a disabled storage directory.
+- When switching to .NET 10: moves those folders back.
+	- This may prompt for `sudo` depending on permissions.
+
 ## Usage
 
 Once you’ve added the functions in your shell profile:
@@ -145,8 +158,16 @@ Flags:
 
 - `--help` / `-h`: print usage
 - `--no-select-xcode`: do not run `sudo xcode-select -s ...`
+- `--no-dotnet-move`: do not move `.NET 10` SDK/manifests folders (only switches JDK/Xcode)
 - `--no-cleanup`: skip repo cleanup (no deletes, no `dotnet clean`, no workload restore)
 - `--no-workload-restore`: run cleanup but skip `dotnet workload restore`
+
+### Optional configuration for .NET folder moving
+
+If your dotnet install root is not `/usr/local/share/dotnet`, or you want to control where the moved folders are stored:
+
+- `export DOTNETENV_DOTNET_ROOT="/usr/local/share/dotnet"`
+- `export DOTNETENV_DISABLED_DIR="/usr/local/share/dotnet/.env-switcher-disabled"`
 
 ## Quick verification
 

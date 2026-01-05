@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
 source "$SCRIPT_DIR/dotnet-env-common.zsh"
 
 select_xcode=1
+do_dotnet_move=1
 do_cleanup=1
 do_workload_restore=1
 for arg in "$@"; do
@@ -23,6 +24,9 @@ for arg in "$@"; do
       ;;
     --no-select-xcode)
       select_xcode=0
+      ;;
+    --no-dotnet-move)
+      do_dotnet_move=0
       ;;
     --no-cleanup)
       do_cleanup=0
@@ -38,6 +42,9 @@ for arg in "$@"; do
   esac
 done
 
+if [[ "$do_dotnet_move" == "1" ]]; then
+  __dotnetenv_disable_dotnet10 || return 1
+fi
 __dotnetenv_apply "dotnet9" "$select_xcode"
 
 if [[ "$do_cleanup" == "1" ]]; then

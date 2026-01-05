@@ -16,8 +16,8 @@ __dotnetenv_warn() {
 __dotnetenv_usage() {
   cat <<'EOF'
 Usage:
-  use-dotnet9 [--no-select-xcode] [--no-cleanup] [--no-workload-restore]
-  use-dotnet10 [--no-select-xcode] [--no-cleanup] [--no-workload-restore]
+  use-dotnet9 [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore]
+  use-dotnet10 [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore]
 
   (If you don't have those functions yet, define them in ~/.zshrc or ~/.zprofile.)
 
@@ -30,6 +30,10 @@ What it does:
   - Sets JAVA_HOME to JDK 17 (dotnet9) or JDK 21 (dotnet10) via /usr/libexec/java_home
   - Prepends $JAVA_HOME/bin to PATH
   - Sets DEVELOPER_DIR for the matching Xcode.app
+  - When switching to dotnet9, disables .NET 10 SDK discovery by moving '10.*' folders out of:
+      - /usr/local/share/dotnet/sdk
+      - /usr/local/share/dotnet/sdk-manifests
+    When switching to dotnet10, re-enables them by moving those folders back.
   - Runs: sudo xcode-select -s "$DEVELOPER_DIR"  (system-wide) by default
     - Use --no-select-xcode to skip the system-wide change
   - By default performs a repo cleanup in the current directory:
@@ -42,6 +46,8 @@ What it does:
 Configuration (optional):
   export DOTNET9_XCODE_APP="/Applications/Xcode_16.4.app"
   export DOTNET10_XCODE_APP="/Applications/Xcode_26.1.app"   # or your actual path
+  export DOTNETENV_DOTNET_ROOT="/usr/local/share/dotnet"       # dotnet install root
+  export DOTNETENV_DISABLED_DIR="/usr/local/share/dotnet/.env-switcher-disabled"  # storage for moved folders
 
 Notes:
   - If you run the script as an executable (not sourced), exports will NOT persist.
@@ -49,6 +55,132 @@ Notes:
   - Default behavior switches Xcode system-wide (recommended for VS Code).
       - Or start VS Code from that same terminal after running use-dotnet9/use-dotnet10.
 EOF
+}
+
+__dotnetenv_dotnet_root() {
+  local root="${DOTNETENV_DOTNET_ROOT:-/usr/local/share/dotnet}"
+  print -r -- "$root"
+}
+
+__dotnetenv_disabled_root() {
+  local root
+  root="$(__dotnetenv_dotnet_root)"
+  print -r -- "${DOTNETENV_DISABLED_DIR:-$root/.env-switcher-disabled}"
+}
+
+__dotnetenv_mkdir_p() {
+  local dir="$1"
+  if [[ -z "${dir:-}" ]]; then
+    __dotnetenv_die "mkdir: directory is empty"
+    return 1
+  fi
+
+  if [[ -d "$dir" ]]; then
+    return 0
+  fi
+
+  local parent
+  parent="$(dirname -- "$dir")"
+  if [[ -w "$parent" ]]; then
+    mkdir -p -- "$dir"
+  else
+    sudo mkdir -p -- "$dir"
+  fi
+}
+
+__dotnetenv_move_matching_dirs() {
+  emulate -L zsh
+  setopt null_glob
+
+  local src_base="$1"
+  local dst_base="$2"
+  local pattern="$3"
+  local label="$4"
+
+  if [[ -z "${src_base:-}" || -z "${dst_base:-}" || -z "${pattern:-}" ]]; then
+    __dotnetenv_die "move-dirs: missing arguments"
+    return 1
+  fi
+
+  if [[ ! -d "$src_base" ]]; then
+    # If the dotnet install isn't in this location, don't hard-fail.
+    __dotnetenv_warn "$label: not found: $src_base (skipping)"
+    return 0
+  fi
+
+  local -a matches
+  matches=("$src_base"/${pattern}(/N))
+  if (( ${#matches} == 0 )); then
+    return 0
+  fi
+
+  __dotnetenv_mkdir_p "$dst_base" || return 1
+
+  local moved=0
+  local src
+  for src in "${matches[@]}"; do
+    local name dst
+    name="${src:t}"
+    dst="$dst_base/$name"
+
+    if [[ -e "$dst" ]]; then
+      __dotnetenv_warn "$label: destination already exists (skipping): $dst"
+      continue
+    fi
+
+    if [[ -w "$src_base" && -w "$dst_base" ]]; then
+      mv -- "$src" "$dst"
+    else
+      sudo mv -- "$src" "$dst"
+    fi
+    (( moved++ ))
+  done
+
+  if (( moved > 0 )); then
+    print -r -- "$label: moved $moved folder(s)."
+  fi
+}
+
+__dotnetenv_disable_dotnet10() {
+  local dotnet_root disabled_root
+  dotnet_root="$(__dotnetenv_dotnet_root)"
+  disabled_root="$(__dotnetenv_disabled_root)"
+
+  print -r -- ""
+  print -r -- "Disabling .NET 10 SDK folders (moving '10.*' out of dotnet root): $dotnet_root"
+
+  __dotnetenv_move_matching_dirs \
+    "$dotnet_root/sdk" \
+    "$disabled_root/sdk" \
+    '10.*' \
+    '.NET SDK (10.*)' || return 1
+
+  __dotnetenv_move_matching_dirs \
+    "$dotnet_root/sdk-manifests" \
+    "$disabled_root/sdk-manifests" \
+    '10.*' \
+    'SDK manifests (10.*)' || return 1
+}
+
+__dotnetenv_enable_dotnet10() {
+  local dotnet_root disabled_root
+  dotnet_root="$(__dotnetenv_dotnet_root)"
+  disabled_root="$(__dotnetenv_disabled_root)"
+
+  print -r -- ""
+  print -r -- "Enabling .NET 10 SDK folders (moving '10.*' back into dotnet root): $dotnet_root"
+
+  __dotnetenv_move_matching_dirs \
+    "$disabled_root/sdk" \
+    "$dotnet_root/sdk" \
+    '10.*' \
+    '.NET SDK (10.*)' || return 1
+
+  __dotnetenv_move_matching_dirs \
+    "$disabled_root/sdk-manifests" \
+    "$dotnet_root/sdk-manifests" \
+    '10.*' \
+    'SDK manifests (10.*)' || return 1
 }
 
 __dotnetenv_dotnet_workload_restore_sln() {
