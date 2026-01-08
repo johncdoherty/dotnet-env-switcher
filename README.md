@@ -145,6 +145,7 @@ By default it also:
 	- Runs `dotnet clean` on the first `*.sln` in the current directory (if any)
 	- Runs `dotnet workload restore` on the first `*.sln` in the current directory (if any)
 		- Retries with `sudo` if dotnet reports inadequate permissions
+	- Runs `dotnet restore` on the first `*.sln` in the current directory (if any)
 	- Deletes all `bin/` and `obj/` folders recursively (skipping `.git/.vs/.idea/node_modules`)
 
 And it manages .NET 10 SDK visibility:
@@ -170,6 +171,7 @@ Flags:
 - `--no-dotnet-move`: do not move `.NET 10` SDK/manifests folders (only switches JDK/Xcode)
 - `--no-cleanup`: skip repo cleanup (no deletes, no `dotnet clean`, no workload restore)
 - `--no-workload-restore`: run cleanup but skip `dotnet workload restore`
+- `--no-restore`: run cleanup but skip `dotnet restore`
 
 ### Optional configuration for .NET folder moving
 

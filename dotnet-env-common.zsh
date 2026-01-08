@@ -16,8 +16,8 @@ __dotnetenv_warn() {
 __dotnetenv_usage() {
   cat <<'EOF'
 Usage:
-  use-dotnet9 [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore]
-  use-dotnet10 [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore]
+  use-dotnet9 [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
+  use-dotnet10 [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
 
   (If you don't have those functions yet, define them in ~/.zshrc or ~/.zprofile.)
 
@@ -42,6 +42,10 @@ What it does:
       - Runs 'dotnet workload restore' on the first '*.sln' in the current directory (if any)
         - If workloads are installed system-wide and permissions are inadequate, it will retry using sudo.
       - Deletes all 'bin' and 'obj' folders recursively (skipping .git/.vs/node_modules)
+      - Runs 'dotnet restore' on the first '*.sln' in the current directory (if any)
+
+  Restore notes:
+    - Use --no-restore to skip 'dotnet restore'.
 
 Configuration (optional):
   export DOTNET9_XCODE_APP="/Applications/Xcode_16.4.app"
@@ -226,22 +230,108 @@ __dotnetenv_dotnet_workload_restore_sln() {
   print -r -- ""
   print -r -- "Running: dotnet workload restore $(basename -- "$sln")"
 
+  local is_json_failure
+  is_json_failure() {
+    # Common symptom when workload manifest/update JSON is corrupted or replaced by a proxy/HTML.
+    # Keep this deliberately broad but specific to JSON parsing failures.
+    grep -qiE 'Workload update failed|Expected end of data|invalid after a single JSON value|invalid.*JSON'
+  }
+
   # Try without sudo first (works for user-local workload installs).
-  local output
-  output="$(dotnet workload restore "$sln" 2>&1)" || {
+  # If we hit a manifest-update JSON parsing failure, retry with --skip-manifest-update.
+  local output rc
+  output="$(dotnet workload restore "$sln" 2>&1)"
+  rc=$?
+  if (( rc != 0 )); then
     print -r -- "$output" >&2
 
     # If workloads are installed system-wide, dotnet may require elevated privileges.
     if print -r -- "$output" | grep -qiE 'Inadequate permissions|elevated privileges'; then
       __dotnetenv_warn "dotnet workload restore needs elevated privileges; retrying with sudo"
-      sudo dotnet workload restore "$sln"
-      return $?
+      output="$(sudo dotnet workload restore "$sln" 2>&1)"
+      rc=$?
+      if (( rc == 0 )); then
+        print -r -- "$output"
+        return 0
+      fi
+
+      print -r -- "$output" >&2
+
+      if print -r -- "$output" | is_json_failure; then
+        __dotnetenv_warn "workload restore failed during manifest update; retrying with --skip-manifest-update"
+        output="$(sudo dotnet workload restore "$sln" --skip-manifest-update 2>&1)"
+        rc=$?
+        if (( rc == 0 )); then
+          print -r -- "$output"
+          return 0
+        fi
+
+        print -r -- "$output" >&2
+        if print -r -- "$output" | is_json_failure; then
+          __dotnetenv_warn "workload restore still failing due to JSON parse errors; skipping workload restore for this run."
+          __dotnetenv_warn "Workaround: run 'sudo dotnet workload restore --skip-manifest-update' later when your network/proxy is stable."
+          return 0
+        fi
+
+        return $rc
+      fi
+
+      return $rc
     fi
 
-    return 1
-  }
+    if print -r -- "$output" | is_json_failure; then
+      __dotnetenv_warn "workload restore failed during manifest update; retrying with --skip-manifest-update"
+      output="$(dotnet workload restore "$sln" --skip-manifest-update 2>&1)"
+      rc=$?
+      if (( rc == 0 )); then
+        print -r -- "$output"
+        return 0
+      fi
+
+      print -r -- "$output" >&2
+      if print -r -- "$output" | is_json_failure; then
+        __dotnetenv_warn "workload restore still failing due to JSON parse errors; skipping workload restore for this run."
+        __dotnetenv_warn "Workaround: run 'dotnet workload restore --skip-manifest-update' later when your network/proxy is stable."
+        return 0
+      fi
+
+      return $rc
+    fi
+
+    return $rc
+  fi
 
   # Print the successful output (kept in case it did real work).
+  print -r -- "$output"
+}
+
+__dotnetenv_dotnet_restore_sln() {
+  local root_dir="$1"
+  local sln
+
+  if [[ ! -d "$root_dir" ]]; then
+    __dotnetenv_die "dotnet-restore: not a directory: $root_dir"
+    return 1
+  fi
+
+  # Only look in the current directory (not recursive) to match the common "repo root" workflow.
+  sln="$(find "$root_dir" -maxdepth 1 -type f -name '*.sln' -print | sort | head -n 1)"
+  if [[ -z "${sln:-}" ]]; then
+    __dotnetenv_warn "No .sln found in '$root_dir' (skipping dotnet restore)."
+    return 0
+  fi
+
+  print -r -- ""
+  print -r -- "Running: dotnet restore $(basename -- \"$sln\")"
+
+  local output rc
+  output="$(dotnet restore "$sln" 2>&1)"
+  rc=$?
+  if (( rc != 0 )); then
+    print -r -- "$output" >&2
+    return $rc
+  fi
+
   print -r -- "$output"
 }
 
@@ -288,7 +378,26 @@ __dotnetenv_dotnet_clean_sln() {
 
   print -r -- ""
   print -r -- "Running: dotnet clean $(basename -- "$sln")"
-  dotnet clean "$sln" -v minimal
+
+  # dotnet clean can fail if a previous restore generated a project.assets.json that
+  # doesn't include the current TFM/RID (common when switching branches/toolchains).
+  # Treat NETSDK1047 as a non-fatal cleanup issue so environment switching can continue.
+  local output rc
+  output="$(dotnet clean "$sln" -v minimal 2>&1)"
+  rc=$?
+  if (( rc != 0 )); then
+    if print -r -- "$output" | grep -qE 'NETSDK1047|NETSDK1004'; then
+      __dotnetenv_warn "dotnet clean failed due to missing/mismatched restore assets (NETSDK10xx)."
+      __dotnetenv_warn "Suggestion: run 'dotnet restore' for the solution (for MacCatalyst often: -r maccatalyst-arm64)."
+      __dotnetenv_warn "Continuing."
+      return 0
+    fi
+
+    print -r -- "$output" >&2
+    return $rc
+  fi
+
+  print -r -- "$output"
 }
 
 __dotnetenv_delete_bin_obj() {
@@ -316,11 +425,20 @@ __dotnetenv_delete_bin_obj() {
 
 __dotnetenv_repo_cleanup() {
   local root_dir="$1"
+  local do_workload_restore="${2:-1}"
+  local do_restore="${3:-1}"
 
   __dotnetenv_purge_user_files "$root_dir" || return 1
   __dotnetenv_dotnet_clean_sln "$root_dir" || return 1
-  __dotnetenv_dotnet_workload_restore_sln "$root_dir" || return 1
   __dotnetenv_delete_bin_obj "$root_dir" || return 1
+
+  if [[ "$do_workload_restore" == "1" ]]; then
+    __dotnetenv_dotnet_workload_restore_sln "$root_dir" || return 1
+  fi
+
+  if [[ "$do_restore" == "1" ]]; then
+    __dotnetenv_dotnet_restore_sln "$root_dir" || return 1
+  fi
 }
 
 __dotnetenv_pick_java_home() {
