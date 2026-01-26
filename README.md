@@ -142,10 +142,16 @@ By default it also:
 - Runs `sudo xcode-select -s "$DEVELOPER_DIR"` (system-wide)
 - Performs a cleanup in the *current directory*:
 	- Deletes `*.csproj.user`
-	- Runs `dotnet clean` on the first `*.sln` in the current directory (if any)
-	- Runs `dotnet workload restore` on the first `*.sln` in the current directory (if any)
+	- Runs `dotnet clean` on a preferred `*.sln` in the current directory (if any)
+		- If multiple exist, prefers one that does NOT end with `-all.sln` or `-dev.sln`
+		- When possible, targets individual `*.csproj` files from the solution and excludes UnitTests projects (by path or project file name containing `UnitTests`)
+	- Runs `dotnet workload restore` on a preferred `*.sln` in the current directory (if any)
+		- If multiple exist, prefers one that does NOT end with `-all.sln` or `-dev.sln`
 		- Retries with `sudo` if dotnet reports inadequate permissions
-	- Runs `dotnet restore` on the first `*.sln` in the current directory (if any)
+		- When possible, targets individual `*.csproj` files from the solution and excludes UnitTests projects (by path or project file name containing `UnitTests`)
+	- Runs `dotnet restore` on a preferred `*.sln` in the current directory (if any)
+		- If multiple exist, prefers one that does NOT end with `-all.sln` or `-dev.sln`
+		- When possible, targets individual `*.csproj` files from the solution and excludes UnitTests projects (by path or project file name containing `UnitTests`)
 	- Deletes all `bin/` and `obj/` folders recursively (skipping `.git/.vs/.idea/node_modules`)
 
 And it manages .NET 10 SDK visibility:

@@ -38,11 +38,14 @@ What it does:
     - Use --no-select-xcode to skip the system-wide change
   - By default performs a repo cleanup in the current directory:
       - Deletes all '*.csproj.user' files
-      - Runs 'dotnet clean' on the first '*.sln' in the current directory (if any)
-      - Runs 'dotnet workload restore' on the first '*.sln' in the current directory (if any)
+      - Runs 'dotnet clean' on a preferred '*.sln' in the current directory (if any)
+        - If multiple exist, prefers one that does NOT end with '-all.sln' or '-dev.sln'
+      - Runs 'dotnet workload restore' on a preferred '*.sln' in the current directory (if any)
+        - If multiple exist, prefers one that does NOT end with '-all.sln' or '-dev.sln'
         - If workloads are installed system-wide and permissions are inadequate, it will retry using sudo.
       - Deletes all 'bin' and 'obj' folders recursively (skipping .git/.vs/node_modules)
-      - Runs 'dotnet restore' on the first '*.sln' in the current directory (if any)
+      - Runs 'dotnet restore' on a preferred '*.sln' in the current directory (if any)
+        - If multiple exist, prefers one that does NOT end with '-all.sln' or '-dev.sln'
 
   Restore notes:
     - Use --no-restore to skip 'dotnet restore'.
@@ -59,6 +62,201 @@ Notes:
   - Default behavior switches Xcode system-wide (recommended for VS Code).
       - Or start VS Code from that same terminal after running use-dotnet9/use-dotnet10.
 EOF
+}
+
+__dotnetenv_pick_sln_in_dir() {
+  emulate -L zsh
+  setopt null_glob
+
+  local root_dir="$1"
+  if [[ -z "${root_dir:-}" ]]; then
+    __dotnetenv_die "pick-sln: root directory is empty"
+    return 1
+  fi
+
+  if [[ ! -d "$root_dir" ]]; then
+    __dotnetenv_die "pick-sln: not a directory: $root_dir"
+    return 1
+  fi
+
+  local -a slns preferred
+  slns=("$root_dir"/*.sln(N))
+
+  if (( ${#slns} == 0 )); then
+    return 0
+  fi
+
+  slns=("${(on)slns[@]}")
+
+  local sln base
+  for sln in "${slns[@]}"; do
+    base="${sln:t}"
+    if [[ "$base" == *-all.sln || "$base" == *-dev.sln ]]; then
+      continue
+    fi
+    preferred+=("$sln")
+  done
+
+  if (( ${#preferred} > 0 )); then
+    preferred=("${(on)preferred[@]}")
+    print -r -- "${preferred[1]}"
+    return 0
+  fi
+
+  print -r -- "${slns[1]}"
+}
+
+__dotnetenv_sanitize_project_path_arg() {
+  emulate -L zsh
+  setopt extended_glob
+
+  local p="$1"
+  p="${p%$'\r'}"
+  p="${p##[[:space:]]#}"
+  p="${p%%[[:space:]]#}"
+
+  # Strip a leading key=value prefix (e.g. abs=/path/to.csproj).
+  if [[ "$p" == [A-Za-z_][A-Za-z0-9_]#=* ]]; then
+    p="${p#*=}"
+  fi
+
+  # Normalize Windows-style paths.
+  p="${p//\\//}"
+
+  print -r -- "$p"
+}
+
+__dotnetenv_is_unittests_project_path() {
+  emulate -L zsh
+
+  local p="$1"
+  p="$(__dotnetenv_sanitize_project_path_arg "$p")"
+
+  local pl="${p:l}"
+  local base="${p:t:l}"
+
+  # Folder-based convention.
+  if [[ "$pl" == */unittests/* ]]; then
+    return 0
+  fi
+
+  # Name-based convention (e.g. Esri.AppModule.Survey123.UnitTests.csproj)
+  if [[ "$base" == *.csproj && "$base" == *unittests* ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
+__dotnetenv_solution_has_unittests_projects() {
+  emulate -L zsh
+  local sln="$1"
+
+  if [[ -z "${sln:-}" || ! -f "$sln" ]]; then
+    return 1
+  fi
+
+  # Best-effort detection: does the solution reference any csproj under a UnitTests folder?
+  if command -v grep >/dev/null 2>&1; then
+    if grep -qiE 'unittests.*\.csproj|\.csproj.*unittests' "$sln"; then
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+__dotnetenv_list_solution_projects_excluding_unittests() {
+  emulate -L zsh
+  setopt null_glob
+  setopt extended_glob
+
+  local sln="$1"
+  if [[ -z "${sln:-}" ]]; then
+    __dotnetenv_die "list-sln-projects: sln path is empty"
+    return 1
+  fi
+
+  if [[ ! -f "$sln" ]]; then
+    __dotnetenv_die "list-sln-projects: sln not found: $sln"
+    return 1
+  fi
+
+  local sln_dir="${sln:h}"
+  local -a included
+
+  # Prefer asking dotnet to enumerate the solution projects.
+  # This is more robust than parsing the .sln format ourselves.
+  if command -v dotnet >/dev/null 2>&1; then
+    local output
+    output="$(dotnet sln "$sln" list 2>/dev/null)"
+    if [[ -n "${output:-}" ]]; then
+      local line
+      while IFS= read -r line; do
+        line="$(__dotnetenv_sanitize_project_path_arg "$line")"
+
+        [[ -n "${line:-}" ]] || continue
+        [[ "${line:l}" == *.csproj ]] || continue
+
+        if __dotnetenv_is_unittests_project_path "$line"; then
+          continue
+        fi
+
+        local abs
+        if [[ "$line" == /* ]]; then
+          abs="$line"
+        else
+          abs="$sln_dir/$line"
+        fi
+
+        [[ -f "$abs" ]] || continue
+        included+=("$abs")
+      done <<< "$output"
+
+      local p
+      for p in "${included[@]}"; do
+        [[ -n "${p:-}" ]] || continue
+        print -r -- "$p"
+      done
+
+      return 0
+    fi
+  fi
+
+  local line
+  while IFS= read -r line; do
+    line="$(__dotnetenv_sanitize_project_path_arg "$line")"
+
+    # Typical line:
+    #   Project("{GUID}") = "Name", "relative\\path\\proj.csproj", "{GUID}"
+    [[ "$line" == Project\(* ]] || continue
+
+    local -a parts
+    parts=("${(@s/\"/)line}")
+    (( ${#parts} >= 6 )) || continue
+
+    local rel
+    rel="$(__dotnetenv_sanitize_project_path_arg "${parts[6]}")"
+    [[ "$rel" == *.csproj ]] || continue
+
+    if __dotnetenv_is_unittests_project_path "$rel"; then
+      continue
+    fi
+
+    local abs="$sln_dir/$rel"
+    if [[ "$rel" == /* ]]; then
+      abs="$rel"
+    fi
+    [[ -f "$abs" ]] || continue
+
+    included+=("$abs")
+  done < "$sln"
+
+  local p
+  for p in "${included[@]}"; do
+    [[ -n "${p:-}" ]] || continue
+    print -r -- "$p"
+  done
 }
 
 __dotnetenv_dotnet_root() {
@@ -221,14 +419,40 @@ __dotnetenv_dotnet_workload_restore_sln() {
   fi
 
   # Only look in the current directory (not recursive) to match the common "repo root" workflow.
-  sln="$(find "$root_dir" -maxdepth 1 -type f -name '*.sln' -print | sort | head -n 1)"
+  sln="$(__dotnetenv_pick_sln_in_dir "$root_dir")" || return 1
   if [[ -z "${sln:-}" ]]; then
     __dotnetenv_warn "No .sln found in '$root_dir' (skipping dotnet workload restore)."
     return 0
   fi
 
   print -r -- ""
-  print -r -- "Running: dotnet workload restore $(basename -- "$sln")"
+  local -a targets
+  targets=("${(@f)$(__dotnetenv_list_solution_projects_excluding_unittests "$sln")}") || return 1
+
+  local -a filtered
+  local t
+  for t in "${targets[@]}"; do
+    t="$(__dotnetenv_sanitize_project_path_arg "$t")"
+    [[ -n "${t:-}" ]] || continue
+    [[ -f "$t" ]] || continue
+    filtered+=("$t")
+  done
+  targets=("${filtered[@]}")
+
+  if (( ${#targets} == 0 )); then
+    if __dotnetenv_solution_has_unittests_projects "$sln"; then
+      __dotnetenv_warn "No non-UnitTests projects found in $(basename -- "$sln"); skipping dotnet workload restore."
+      return 0
+    fi
+
+    targets=("$sln")
+  fi
+
+  if (( ${#targets} == 1 )) && [[ "${targets[1]}" == "$sln" ]]; then
+    print -r -- "Running: dotnet workload restore $(basename -- "$sln")"
+  else
+    print -r -- "Running: dotnet workload restore (excluding UnitTests projects)"
+  fi
 
   local is_json_failure
   is_json_failure() {
@@ -237,39 +461,66 @@ __dotnetenv_dotnet_workload_restore_sln() {
     grep -qiE 'Workload update failed|Expected end of data|invalid after a single JSON value|invalid.*JSON'
   }
 
-  # Try without sudo first (works for user-local workload installs).
-  # If we hit a manifest-update JSON parsing failure, retry with --skip-manifest-update.
-  local output rc
-  output="$(dotnet workload restore "$sln" 2>&1)"
-  rc=$?
-  if (( rc != 0 )); then
-    print -r -- "$output" >&2
+  local target
+  for target in "${targets[@]}"; do
+    target="$(__dotnetenv_sanitize_project_path_arg "$target")"
+    [[ -n "${target:-}" ]] || continue
 
-    # If workloads are installed system-wide, dotnet may require elevated privileges.
-    if print -r -- "$output" | grep -qiE 'Inadequate permissions|elevated privileges'; then
-      __dotnetenv_warn "dotnet workload restore needs elevated privileges; retrying with sudo"
-      output="$(sudo dotnet workload restore "$sln" 2>&1)"
-      rc=$?
-      if (( rc == 0 )); then
-        print -r -- "$output"
-        return 0
-      fi
-
+    # Try without sudo first (works for user-local workload installs).
+    # If we hit a manifest-update JSON parsing failure, retry with --skip-manifest-update.
+    local output rc
+    output="$(dotnet workload restore "$target" 2>&1)"
+    rc=$?
+    if (( rc != 0 )); then
       print -r -- "$output" >&2
 
-      if print -r -- "$output" | is_json_failure; then
-        __dotnetenv_warn "workload restore failed during manifest update; retrying with --skip-manifest-update"
-        output="$(sudo dotnet workload restore "$sln" --skip-manifest-update 2>&1)"
+      # If workloads are installed system-wide, dotnet may require elevated privileges.
+      if print -r -- "$output" | grep -qiE 'Inadequate permissions|elevated privileges'; then
+        __dotnetenv_warn "dotnet workload restore needs elevated privileges; retrying with sudo"
+        output="$(sudo dotnet workload restore "$target" 2>&1)"
         rc=$?
         if (( rc == 0 )); then
           print -r -- "$output"
-          return 0
+          continue
+        fi
+
+        print -r -- "$output" >&2
+
+        if print -r -- "$output" | is_json_failure; then
+          __dotnetenv_warn "workload restore failed during manifest update; retrying with --skip-manifest-update"
+          output="$(sudo dotnet workload restore "$target" --skip-manifest-update 2>&1)"
+          rc=$?
+          if (( rc == 0 )); then
+            print -r -- "$output"
+            continue
+          fi
+
+          print -r -- "$output" >&2
+          if print -r -- "$output" | is_json_failure; then
+            __dotnetenv_warn "workload restore still failing due to JSON parse errors; skipping workload restore for this run."
+            __dotnetenv_warn "Workaround: run 'sudo dotnet workload restore --skip-manifest-update' later when your network/proxy is stable."
+            return 0
+          fi
+
+          return $rc
+        fi
+
+        return $rc
+      fi
+
+      if print -r -- "$output" | is_json_failure; then
+        __dotnetenv_warn "workload restore failed during manifest update; retrying with --skip-manifest-update"
+        output="$(dotnet workload restore "$target" --skip-manifest-update 2>&1)"
+        rc=$?
+        if (( rc == 0 )); then
+          print -r -- "$output"
+          continue
         fi
 
         print -r -- "$output" >&2
         if print -r -- "$output" | is_json_failure; then
           __dotnetenv_warn "workload restore still failing due to JSON parse errors; skipping workload restore for this run."
-          __dotnetenv_warn "Workaround: run 'sudo dotnet workload restore --skip-manifest-update' later when your network/proxy is stable."
+          __dotnetenv_warn "Workaround: run 'dotnet workload restore --skip-manifest-update' later when your network/proxy is stable."
           return 0
         fi
 
@@ -279,30 +530,8 @@ __dotnetenv_dotnet_workload_restore_sln() {
       return $rc
     fi
 
-    if print -r -- "$output" | is_json_failure; then
-      __dotnetenv_warn "workload restore failed during manifest update; retrying with --skip-manifest-update"
-      output="$(dotnet workload restore "$sln" --skip-manifest-update 2>&1)"
-      rc=$?
-      if (( rc == 0 )); then
-        print -r -- "$output"
-        return 0
-      fi
-
-      print -r -- "$output" >&2
-      if print -r -- "$output" | is_json_failure; then
-        __dotnetenv_warn "workload restore still failing due to JSON parse errors; skipping workload restore for this run."
-        __dotnetenv_warn "Workaround: run 'dotnet workload restore --skip-manifest-update' later when your network/proxy is stable."
-        return 0
-      fi
-
-      return $rc
-    fi
-
-    return $rc
-  fi
-
-  # Print the successful output (kept in case it did real work).
-  print -r -- "$output"
+    print -r -- "$output"
+  done
 }
 
 __dotnetenv_dotnet_restore_sln() {
@@ -315,24 +544,52 @@ __dotnetenv_dotnet_restore_sln() {
   fi
 
   # Only look in the current directory (not recursive) to match the common "repo root" workflow.
-  sln="$(find "$root_dir" -maxdepth 1 -type f -name '*.sln' -print | sort | head -n 1)"
+  sln="$(__dotnetenv_pick_sln_in_dir "$root_dir")" || return 1
   if [[ -z "${sln:-}" ]]; then
     __dotnetenv_warn "No .sln found in '$root_dir' (skipping dotnet restore)."
     return 0
   fi
 
-  print -r -- ""
-  print -r -- "Running: dotnet restore $(basename -- \"$sln\")"
+  local -a targets
+  targets=("${(@f)$(__dotnetenv_list_solution_projects_excluding_unittests "$sln")}") || return 1
 
-  local output rc
-  output="$(dotnet restore "$sln" 2>&1)"
-  rc=$?
-  if (( rc != 0 )); then
-    print -r -- "$output" >&2
-    return $rc
+  local -a filtered
+  local t
+  for t in "${targets[@]}"; do
+    t="$(__dotnetenv_sanitize_project_path_arg "$t")"
+    [[ -n "${t:-}" ]] || continue
+    [[ -f "$t" ]] || continue
+    filtered+=("$t")
+  done
+  targets=("${filtered[@]}")
+
+  if (( ${#targets} == 0 )); then
+    if __dotnetenv_solution_has_unittests_projects "$sln"; then
+      __dotnetenv_warn "No non-UnitTests projects found in $(basename -- "$sln"); skipping dotnet restore."
+      return 0
+    fi
+
+    targets=("$sln")
   fi
 
-  print -r -- "$output"
+  local target
+  for target in "${targets[@]}"; do
+    target="$(__dotnetenv_sanitize_project_path_arg "$target")"
+    [[ -n "${target:-}" ]] || continue
+
+    print -r -- ""
+    print -r -- "Running: dotnet restore $(basename -- "$target")"
+
+    local output rc
+    output="$(dotnet restore "$target" 2>&1)"
+    rc=$?
+    if (( rc != 0 )); then
+      print -r -- "$output" >&2
+      return $rc
+    fi
+
+    print -r -- "$output"
+  done
 }
 
 __dotnetenv_purge_user_files() {
@@ -370,34 +627,67 @@ __dotnetenv_dotnet_clean_sln() {
   fi
 
   # Only look in the current directory (not recursive) to match the common "repo root" workflow.
-  sln="$(find "$root_dir" -maxdepth 1 -type f -name '*.sln' -print | sort | head -n 1)"
+  sln="$(__dotnetenv_pick_sln_in_dir "$root_dir")" || return 1
   if [[ -z "${sln:-}" ]]; then
     __dotnetenv_warn "No .sln found in '$root_dir' (skipping dotnet clean)."
     return 0
   fi
 
-  print -r -- ""
-  print -r -- "Running: dotnet clean $(basename -- "$sln")"
+  local -a targets
+  targets=("${(@f)$(__dotnetenv_list_solution_projects_excluding_unittests "$sln")}") || return 1
 
-  # dotnet clean can fail if a previous restore generated a project.assets.json that
-  # doesn't include the current TFM/RID (common when switching branches/toolchains).
-  # Treat NETSDK1047 as a non-fatal cleanup issue so environment switching can continue.
-  local output rc
-  output="$(dotnet clean "$sln" -v minimal 2>&1)"
-  rc=$?
-  if (( rc != 0 )); then
-    if print -r -- "$output" | grep -qE 'NETSDK1047|NETSDK1004'; then
-      __dotnetenv_warn "dotnet clean failed due to missing/mismatched restore assets (NETSDK10xx)."
-      __dotnetenv_warn "Suggestion: run 'dotnet restore' for the solution (for MacCatalyst often: -r maccatalyst-arm64)."
-      __dotnetenv_warn "Continuing."
+  local -a filtered
+  local t
+  for t in "${targets[@]}"; do
+    t="$(__dotnetenv_sanitize_project_path_arg "$t")"
+    [[ -n "${t:-}" ]] || continue
+    [[ -f "$t" ]] || continue
+    filtered+=("$t")
+  done
+  targets=("${filtered[@]}")
+
+  if (( ${#targets} == 0 )); then
+    if __dotnetenv_solution_has_unittests_projects "$sln"; then
+      __dotnetenv_warn "No non-UnitTests projects found in $(basename -- "$sln"); skipping dotnet clean."
       return 0
     fi
 
-    print -r -- "$output" >&2
-    return $rc
+    targets=("$sln")
   fi
 
-  print -r -- "$output"
+  local target
+  for target in "${targets[@]}"; do
+    target="$(__dotnetenv_sanitize_project_path_arg "$target")"
+    [[ -n "${target:-}" ]] || continue
+
+    print -r -- ""
+    print -r -- "Running: dotnet clean $(basename -- "$target")"
+
+    # dotnet clean can fail if a previous restore generated a project.assets.json that
+    # doesn't include the current TFM/RID (common when switching branches/toolchains).
+    # Treat selected NETSDK10xx errors as non-fatal cleanup issues so environment switching can continue.
+    local output rc
+    output="$(dotnet clean "$target" -v minimal 2>&1)"
+    rc=$?
+    if (( rc != 0 )); then
+      if print -r -- "$output" | grep -qE 'NETSDK1047|NETSDK1004|NETSDK1013'; then
+        if print -r -- "$output" | grep -qE 'NETSDK1013'; then
+          __dotnetenv_warn "dotnet clean failed due to an invalid/empty TargetFramework (NETSDK1013)."
+          __dotnetenv_warn "Suggestion: fix the project's TargetFramework/TargetFrameworks (it evaluated to empty), then rerun restore/build."
+        else
+          __dotnetenv_warn "dotnet clean failed due to missing/mismatched restore assets (NETSDK10xx)."
+          __dotnetenv_warn "Suggestion: run 'dotnet restore' for the solution (for MacCatalyst often: -r maccatalyst-arm64)."
+        fi
+        __dotnetenv_warn "Continuing."
+        continue
+      fi
+
+      print -r -- "$output" >&2
+      return $rc
+    fi
+
+    print -r -- "$output"
+  done
 }
 
 __dotnetenv_delete_bin_obj() {
