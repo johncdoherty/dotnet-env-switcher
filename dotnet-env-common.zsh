@@ -750,6 +750,378 @@ __dotnetenv_pick_java_home() {
   fi
 }
 
+__dotnetenv__parse_first_int() {
+  emulate -L zsh
+  local s="$1"
+  local n
+  if [[ "$s" =~ '([0-9]+)' ]]; then
+    n="${match[1]}"
+    print -r -- "$n"
+    return 0
+  fi
+  return 1
+}
+
+__dotnetenv__parse_major_minor() {
+  emulate -L zsh
+  local s="$1"
+  local major minor
+
+  if [[ "$s" =~ '([0-9]+)\.([0-9]+)' ]]; then
+    major="${match[1]}"
+    minor="${match[2]}"
+    print -r -- "$major $minor"
+    return 0
+  fi
+
+  if [[ "$s" =~ '([0-9]+)' ]]; then
+    major="${match[1]}"
+    print -r -- "$major 0"
+    return 0
+  fi
+
+  return 1
+}
+
+__dotnetenv_xcode_version_for_app() {
+  emulate -L zsh
+  local app="$1"
+  local plist="$app/Contents/Info.plist"
+  if [[ -z "${app:-}" || ! -d "$app" || ! -f "$plist" ]]; then
+    return 1
+  fi
+
+  local ver
+  if command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
+    ver="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist" 2>/dev/null)"
+  fi
+
+  if [[ -z "${ver:-}" ]]; then
+    # Fallback: derive from common bundle naming conventions.
+    # Examples:
+    #   Xcode_16.4.app  -> 16.4
+    #   Xcode_26.1.app  -> 26.1
+    #   Xcode_26.app    -> 26.0
+    local name="${app:t}"
+    if [[ "$name" =~ '^Xcode[_-]([0-9]+)\.([0-9]+)\.app$' ]]; then
+      print -r -- "${match[1]}.${match[2]}"
+      return 0
+    fi
+    if [[ "$name" =~ '^Xcode[_-]([0-9]+)\.app$' ]]; then
+      print -r -- "${match[1]}.0"
+      return 0
+    fi
+
+    return 1
+  fi
+
+  # Normalize to major.minor (minor optional).
+  if [[ "$ver" =~ '^([0-9]+)\.([0-9]+)' ]]; then
+    print -r -- "${match[1]}.${match[2]}"
+    return 0
+  fi
+  if [[ "$ver" =~ '^([0-9]+)$' ]]; then
+    print -r -- "${match[1]}.0"
+    return 0
+  fi
+
+  return 1
+}
+
+__dotnetenv_list_xcode_apps() {
+  emulate -L zsh
+  setopt null_glob
+
+  local -a apps
+  apps=(/Applications/Xcode*.app(N) ~/Applications/Xcode*.app(N))
+  apps=("${(on)apps[@]}")
+
+  local a
+  for a in "${apps[@]}"; do
+    [[ -d "$a/Contents/Developer" ]] || continue
+    print -r -- "$a"
+  done
+}
+
+__dotnetenv_guess_apple_platform_major_from_repo() {
+  emulate -L zsh
+
+  local root_dir="$1"
+  if [[ -z "${root_dir:-}" || ! -d "$root_dir" ]]; then
+    return 1
+  fi
+
+  local sln
+  sln="$(__dotnetenv_pick_sln_in_dir "$root_dir")" || return 1
+  if [[ -z "${sln:-}" || ! -f "$sln" ]]; then
+    return 1
+  fi
+
+  local -a projects
+  projects=("${(@f)$(__dotnetenv_list_solution_projects_excluding_unittests "$sln")}") || return 1
+  if (( ${#projects} == 0 )); then
+    return 1
+  fi
+
+  local max_major=0
+  local p content
+  for p in "${projects[@]}"; do
+    [[ -f "$p" ]] || continue
+    content="$(tr -d '\n\r\t ' < "$p" 2>/dev/null)"
+    [[ -n "${content:-}" ]] || continue
+
+    # Look for TFMs like: net9.0-ios18.0, net8.0-maccatalyst17.4, etc.
+    local rest="$content"
+    while [[ "$rest" =~ 'net[0-9]+\.[0-9]+-(ios|maccatalyst|tvos|macos)([0-9]+)(\.[0-9]+)?' ]]; do
+      local major="${match[2]}"
+      if [[ -n "${major:-}" ]] && (( major > max_major )); then
+        max_major=$major
+      fi
+      rest="${rest#*${match[0]}}"
+    done
+  done
+
+  if (( max_major > 0 )); then
+    print -r -- "$max_major"
+    return 0
+  fi
+
+  return 1
+}
+
+__dotnetenv_guess_apple_platform_major_from_installed_packs() {
+  emulate -L zsh
+  setopt null_glob
+
+  local -a roots
+  roots=("$(__dotnetenv_dotnet_root 2>/dev/null)" "$HOME/.dotnet" "/usr/local/share/dotnet")
+
+  local -a candidates
+  local r
+  for r in "${roots[@]}"; do
+    [[ -n "${r:-}" && -d "$r" ]] || continue
+    candidates+=(
+      "$r/packs/Microsoft.iOS.Sdk"(N)
+      "$r/packs/Microsoft.MacCatalyst.Sdk"(N)
+    )
+  done
+
+  local max_major=0
+  local pack_root
+  for pack_root in "${candidates[@]}"; do
+    [[ -d "$pack_root" ]] || continue
+    local -a vers
+    vers=("$pack_root"/*(N/))
+    if (( ${#vers} == 0 )); then
+      continue
+    fi
+
+    local v base major
+    for v in "${vers[@]}"; do
+      base="${v:t}"
+      major="$(__dotnetenv__parse_first_int "$base")" || continue
+      if (( major > max_major )); then
+        max_major=$major
+      fi
+    done
+  done
+
+  if (( max_major > 0 )); then
+    print -r -- "$max_major"
+    return 0
+  fi
+
+  return 1
+}
+
+__dotnetenv_guess_required_xcode_version_from_installed_packs() {
+  emulate -L zsh
+  setopt null_glob
+
+  # mode: dotnet9 -> net9.0, dotnet10 -> net10.0
+  local mode="$1"
+  local tfm=""
+  if [[ "$mode" == "dotnet9" ]]; then
+    tfm="net9.0"
+  elif [[ "$mode" == "dotnet10" ]]; then
+    tfm="net10.0"
+  else
+    return 1
+  fi
+
+  local -a roots
+  roots=("$(__dotnetenv_dotnet_root 2>/dev/null)" "$HOME/.dotnet" "/usr/local/share/dotnet")
+
+  # Collect candidate xcode versions inferred from pack folder names and version folders.
+  local best_major=-1
+  local best_minor=-1
+
+  local root pack_dir base parsed major minor
+  for root in "${roots[@]}"; do
+    [[ -n "${root:-}" && -d "$root" ]] || continue
+
+    # Pack folder name conventions seen in the wild:
+    #   packs/Microsoft.iOS.Sdk.net10.0_26.1/
+    #   packs/Microsoft.MacCatalyst.Sdk.net10.0_26.1/
+    for pack_dir in "$root/packs/Microsoft.iOS.Sdk.${tfm}_"*(N/) "$root/packs/Microsoft.MacCatalyst.Sdk.${tfm}_"*(N/); do
+      [[ -d "$pack_dir" ]] || continue
+      base="${pack_dir:t}"
+
+      # Extract suffix after "${tfm}_".
+      local suffix="${base#*${tfm}_}"
+      parsed="$(__dotnetenv__parse_major_minor "$suffix" 2>/dev/null)" || parsed=""
+      if [[ -n "${parsed:-}" ]]; then
+        major="${parsed%% *}"
+        minor="${parsed#* }"
+        if (( major > best_major )) || { (( major == best_major )) && (( minor > best_minor )); }; then
+          best_major=$major
+          best_minor=$minor
+        fi
+      fi
+
+      # Also consider the installed version folders: e.g. 26.1.10502
+      local vdir vname
+      for vdir in "$pack_dir"/*(N/); do
+        vname="${vdir:t}"
+        parsed="$(__dotnetenv__parse_major_minor "$vname" 2>/dev/null)" || parsed=""
+        [[ -n "${parsed:-}" ]] || continue
+        major="${parsed%% *}"
+        minor="${parsed#* }"
+        if (( major > best_major )) || { (( major == best_major )) && (( minor > best_minor )); }; then
+          best_major=$major
+          best_minor=$minor
+        fi
+      done
+    done
+  done
+
+  if (( best_major > 0 )); then
+    print -r -- "$best_major.$best_minor"
+    return 0
+  fi
+
+  return 1
+}
+
+__dotnetenv_guess_required_xcode_version() {
+  emulate -L zsh
+  local root_dir="$1"
+  local mode="$2"
+
+  # Primary (most accurate): infer required Xcode major.minor from installed Apple packs.
+  local required
+  required="$(__dotnetenv_guess_required_xcode_version_from_installed_packs "$mode" 2>/dev/null)" || required=""
+  if [[ -n "${required:-}" ]]; then
+    print -r -- "$required"
+    return 0
+  fi
+
+  # Fallback: infer Apple platform major from TFMs/installed packs, then apply heuristic.
+  local apple_major
+  apple_major="$(__dotnetenv_guess_apple_platform_major_from_repo "$root_dir" 2>/dev/null)" || true
+  if [[ -z "${apple_major:-}" ]]; then
+    apple_major="$(__dotnetenv_guess_apple_platform_major_from_installed_packs 2>/dev/null)" || true
+  fi
+
+  if [[ -z "${apple_major:-}" ]]; then
+    return 1
+  fi
+
+  # Heuristic: iOS/macOS platform major N typically ships with Xcode (N-2).
+  local xcode_major=$(( apple_major - 2 ))
+  if (( xcode_major <= 0 )); then
+    return 1
+  fi
+
+  print -r -- "$xcode_major.0"
+}
+
+__dotnetenv_pick_xcode_app_auto() {
+  emulate -L zsh
+
+  local root_dir="$1"
+  local mode="$2"
+  local required_version
+  required_version="$(__dotnetenv_guess_required_xcode_version "$root_dir" "$mode" 2>/dev/null)" || required_version=""
+  local required_major="" required_minor=""
+  if [[ -n "${required_version:-}" ]]; then
+    local parsed
+    parsed="$(__dotnetenv__parse_major_minor "$required_version" 2>/dev/null)" || parsed=""
+    if [[ -n "${parsed:-}" ]]; then
+      required_major="${parsed%% *}"
+      required_minor="${parsed#* }"
+    fi
+  fi
+
+  local -a apps
+  apps=("${(@f)$(__dotnetenv_list_xcode_apps)}")
+  if (( ${#apps} == 0 )); then
+    __dotnetenv_die "No Xcode*.app found under /Applications or ~/Applications"
+    return 1
+  fi
+
+  # Build a list of "major minor app" rows so we can sort easily.
+  local -a rows
+  local app ver major minor
+  for app in "${apps[@]}"; do
+    ver="$(__dotnetenv_xcode_version_for_app "$app" 2>/dev/null)" || continue
+    major="$(__dotnetenv__parse_first_int "${ver%%.*}")" || continue
+    minor="$(__dotnetenv__parse_first_int "${ver#*.}")" || minor=0
+    rows+=("$major $minor $app")
+  done
+
+  if (( ${#rows} == 0 )); then
+    __dotnetenv_die "Unable to read Xcode version from installed apps"
+    return 1
+  fi
+
+  local best_app=""
+  if [[ -n "${required_major:-}" ]]; then
+    # Prefer the smallest minor that satisfies the requirement (>=), to avoid surprising jumps.
+    local best_minor=999999
+    local row
+    for row in "${rows[@]}"; do
+      major="${row%% *}"
+      minor="${row#* }"; minor="${minor%% *}"
+      app="${row#* * }"
+
+      if (( major == required_major )) && (( minor >= required_minor )) && (( minor < best_minor )); then
+        best_minor=$minor
+        best_app="$app"
+      fi
+    done
+
+    if [[ -n "${best_app:-}" ]]; then
+      print -r -- "$best_app"
+      return 0
+    fi
+
+    __dotnetenv_warn "Could not find an installed Xcode ${required_major}.${required_minor}; falling back to newest installed Xcode"
+  fi
+
+  # Fallback: pick newest by major/minor.
+  local best_major=-1 best_minor=-1
+  local row
+  for row in "${rows[@]}"; do
+    major="${row%% *}"
+    minor="${row#* }"; minor="${minor%% *}"
+    app="${row#* * }"
+
+    if (( major > best_major )) || { (( major == best_major )) && (( minor > best_minor )); }; then
+      best_major=$major
+      best_minor=$minor
+      best_app="$app"
+    fi
+  done
+
+  if [[ -z "${best_app:-}" ]]; then
+    __dotnetenv_die "Could not determine a usable Xcode.app"
+    return 1
+  fi
+
+  print -r -- "$best_app"
+}
+
 __dotnetenv_pick_xcode_dir() {
   local xcode_app="$1"
   local developer_dir
@@ -834,19 +1206,38 @@ __dotnetenv_print_status() {
 __dotnetenv_apply() {
   local mode="$1"           # dotnet9 | dotnet10
   local select_xcode="$2"   # 0 | 1
+  local root_dir="${3:-$(pwd)}"
 
   if [[ "$mode" != "dotnet9" && "$mode" != "dotnet10" ]]; then
     __dotnetenv_die "Unknown mode: $mode"
     return 1
   fi
 
+  local xcode_app=""
+  local auto_xcode="${DOTNETENV_XCODE_AUTO:-1}"
+
   if [[ "$mode" == "dotnet9" ]]; then
     __dotnetenv_pick_java_home "17" || return 1
-    __dotnetenv_pick_xcode_dir "${DOTNET9_XCODE_APP:-/Applications/Xcode_16.4.app}" || return 1
+    xcode_app="${DOTNET9_XCODE_APP:-}"
   else
     __dotnetenv_pick_java_home "21" || return 1
-    __dotnetenv_pick_xcode_dir "${DOTNET10_XCODE_APP:-/Applications/Xcode_26.1.app}" || return 1
+    xcode_app="${DOTNET10_XCODE_APP:-}"
   fi
+
+  if [[ -z "${xcode_app:-}" && "$auto_xcode" == "1" ]]; then
+    xcode_app="$(__dotnetenv_pick_xcode_app_auto "$root_dir" "$mode")" || return 1
+  fi
+
+  # Back-compat fallback if auto is disabled and no app was provided.
+  if [[ -z "${xcode_app:-}" ]]; then
+    if [[ "$mode" == "dotnet9" ]]; then
+      xcode_app="/Applications/Xcode_16.4.app"
+    else
+      xcode_app="/Applications/Xcode_26.1.app"
+    fi
+  fi
+
+  __dotnetenv_pick_xcode_dir "$xcode_app" || return 1
 
   __dotnetenv_maybe_xcode_select "$select_xcode" || return 1
   __dotnetenv_print_status

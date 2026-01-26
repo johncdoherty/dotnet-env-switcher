@@ -16,6 +16,11 @@ Non-goals:
 - `use-dotnet9.zsh`: sets `JAVA_HOME` to JDK 17 and `DEVELOPER_DIR` to Xcode 16.4
 - `use-dotnet10.zsh`: sets `JAVA_HOME` to JDK 21 and `DEVELOPER_DIR` to Xcode 26.1 (override as needed)
 
+Xcode selection notes:
+
+- By default, Xcode is selected automatically based on what the repo appears to require (see “About Xcode switching” below).
+- You can still force a specific Xcode per toolchain using `DOTNET9_XCODE_APP` / `DOTNET10_XCODE_APP`.
+
 Additionally:
 
 - `use-dotnet9.zsh` disables discovery of `.NET 10` SDKs by moving `10.*` folders out of the dotnet install root.
@@ -32,9 +37,13 @@ export DOTNET_ENV_SWITCHER_DIR="$HOME/source/dotnet-env-switcher"
 use-dotnet9()  { source "$DOTNET_ENV_SWITCHER_DIR/use-dotnet9.zsh"  "$@"; }
 use-dotnet10() { source "$DOTNET_ENV_SWITCHER_DIR/use-dotnet10.zsh" "$@"; }
 
-# Optional but recommended - update for your actual path and file name
-export DOTNET9_XCODE_APP="/Applications/Xcode_16.4.app"
-export DOTNET10_XCODE_APP="/Applications/Xcode_26.1.app"  
+# Optional overrides (auto Xcode selection is enabled by default)
+# export DOTNETENV_XCODE_AUTO=1
+# export DOTNETENV_XCODE_AUTO=0   # disable auto and require explicit paths
+#
+# If you want to pin a specific Xcode app per toolchain:
+# export DOTNET9_XCODE_APP="/Applications/Xcode_16.4.app"
+# export DOTNET10_XCODE_APP="/Applications/Xcode_26.1.app"
 ```
 
 Common usage (Typically run from a .NET solution folder in VSCode):
@@ -58,7 +67,10 @@ These scripts are meant to be “installed” by putting the folder somewhere st
 	- Quick check:
 		- `/usr/libexec/java_home -v 17`
 		- `/usr/libexec/java_home -v 21`
-- Xcode installed for each toolchain (defaults are below; you can override them)
+- Xcode installed (one or more versions)
+	- Auto selection looks under `/Applications` (and `~/Applications`) for `Xcode*.app`.
+	- Works well with naming conventions like `Xcode_16.4.app`, `Xcode_26.1.app`, etc.
+	- You can override auto selection via `DOTNET9_XCODE_APP` / `DOTNET10_XCODE_APP` or disable it via `DOTNETENV_XCODE_AUTO=0`.
 - `.NET SDK` installed as pinned by the repo’s `global.json`
 	- The repo expects an exact SDK match (because `rollForward` is disabled).
 	- Quick check from the repo root: `dotnet --version`
@@ -111,14 +123,18 @@ use-dotnet10() { source "$DOTNET_ENV_SWITCHER_DIR/use-dotnet10.zsh" "$@"; }
 
 Then either restart your terminal, or run `source ~/.zshrc`.
 
-### Configure Xcode app paths (optional)
+### Override Xcode selection (optional)
 
-If your Xcode apps aren’t at the defaults, set these in your `~/.zshrc`:
+If you want to force a specific Xcode app (instead of auto selection), set these in your `~/.zshrc`:
 
 - `export DOTNET9_XCODE_APP="/Applications/Xcode_16.4.app"`
 - `export DOTNET10_XCODE_APP="/Applications/Xcode_26.1.app"`  (or your actual path)
 
 (Use whatever names you have installed.)
+
+If you want to disable auto-selection entirely (and require explicit paths), set:
+
+- `export DOTNETENV_XCODE_AUTO=0`
 
 ## Why `source`?
 
@@ -134,7 +150,7 @@ If you execute the script normally, exports won’t persist in your current shel
 On success, it prints a small status block showing the chosen toolchain:
 
 - `JAVA_HOME` (and ensures `$JAVA_HOME/bin` is first in `PATH`)
-- `DEVELOPER_DIR`
+- `DEVELOPER_DIR` (chosen either from `DOTNET9_XCODE_APP`/`DOTNET10_XCODE_APP`, or auto-selected)
 - `xcode-select -p` (the global/system-wide Xcode selection)
 
 By default it also:
@@ -227,3 +243,28 @@ If you’re using VS Code, the most reliable flow is:
 
 - Run `use-dotnet9` / `use-dotnet10` in a terminal
 - Launch VS Code from that same terminal (or keep the default system-wide `xcode-select` behavior)
+
+#### Auto Xcode selection algorithm
+
+If you do **not** set `DOTNET9_XCODE_APP` / `DOTNET10_XCODE_APP` and `DOTNETENV_XCODE_AUTO` is enabled (default), the scripts:
+
+- Look for installed Xcodes under `/Applications` (and `~/Applications`) matching `Xcode*.app`.
+- Prefer to infer the required Xcode **major.minor** from installed Apple packs for the current toolchain:
+	- Looks for pack folders like `packs/Microsoft.iOS.Sdk.net10.0_26.1/*` and `packs/Microsoft.MacCatalyst.Sdk.net10.0_26.1/*`.
+	- This matches what the Apple packs themselves enforce (e.g. “.NET for iOS (26.1.x) requires Xcode 26.1”).
+- If pack-based inference fails, fall back to a best-effort heuristic:
+	- If there is a preferred `*.sln`, enumerate its projects and scan non-UnitTests `*.csproj` for TFMs like `net9.0-ios18.0` / `net9.0-maccatalyst18.0`.
+	- Map platform major to Xcode major using `xcodeMajor = platformMajor - 2` (e.g. iOS 18 → Xcode 16).
+- Select an installed Xcode that satisfies the requirement:
+	- If a required major.minor is known, picks the smallest installed minor that is `>=` the required minor (same major).
+	- Otherwise, falls back to the newest installed Xcode and prints a warning.
+
+How it determines an Xcode’s version:
+
+- Primary: reads `CFBundleShortVersionString` from `Xcode.app/Contents/Info.plist`.
+- Fallback: derives version from the bundle name for conventions like `Xcode_16.4.app` / `Xcode_26.1.app`.
+
+To force manual selection:
+
+- Disable auto: `export DOTNETENV_XCODE_AUTO=0`
+- Pin paths: `export DOTNET9_XCODE_APP=...` and/or `export DOTNET10_XCODE_APP=...`

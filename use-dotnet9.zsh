@@ -52,7 +52,7 @@ done
 if [[ "$do_dotnet_move" == "1" ]]; then
   __dotnetenv_disable_dotnet10 || return 1
 fi
-__dotnetenv_apply "dotnet9" "$select_xcode"
+__dotnetenv_apply "dotnet9" "$select_xcode" "$(pwd)"
 
 if [[ "$do_cleanup" == "1" ]]; then
   __dotnetenv_repo_cleanup "$(pwd)" "$do_workload_restore" "$do_restore" || return 1
