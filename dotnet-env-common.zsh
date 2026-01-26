@@ -1043,6 +1043,7 @@ __dotnetenv_pick_xcode_app_auto() {
   local mode="$2"
   local required_version
   required_version="$(__dotnetenv_guess_required_xcode_version "$root_dir" "$mode" 2>/dev/null)" || required_version=""
+  DOTNETENV_LAST_XCODE_REQUIRED_VERSION="$required_version"
   local required_major="" required_minor=""
   if [[ -n "${required_version:-}" ]]; then
     local parsed
@@ -1203,6 +1204,136 @@ __dotnetenv_print_status() {
   fi
 }
 
+__dotnetenv_java_version_line() {
+  if command -v java >/dev/null 2>&1; then
+    java -version 2>&1 | sed -n '1p'
+  else
+    print -r -- "<not found>"
+  fi
+}
+
+__dotnetenv_xcodebuild_version_line() {
+  if command -v xcodebuild >/dev/null 2>&1; then
+    xcodebuild -version 2>/dev/null | sed -n '1p'
+  else
+    print -r -- "<not found>"
+  fi
+}
+
+__dotnetenv_dotnet_version_line() {
+  if command -v dotnet >/dev/null 2>&1; then
+    dotnet --version 2>/dev/null | sed -n '1p'
+  else
+    print -r -- "<not found>"
+  fi
+}
+
+__dotnetenv_xcode_select_path() {
+  if command -v xcode-select >/dev/null 2>&1; then
+    xcode-select -p 2>/dev/null | sed -n '1p'
+  else
+    print -r -- "<not found>"
+  fi
+}
+
+__dotnetenv_format_change() {
+  emulate -L zsh
+  local before="$1"
+  local after="$2"
+  before="${before:-<unset>}"
+  after="${after:-<unset>}"
+  if [[ "$before" == "$after" ]]; then
+    print -r -- "$after (unchanged)"
+  else
+    print -r -- "$before -> $after"
+  fi
+}
+
+__dotnetenv_print_run_summary() {
+  local mode="$1"
+  local select_xcode="$2"
+  local did_dotnet_move="$3"
+  local did_cleanup="$4"
+  local did_workload_restore="$5"
+  local did_restore="$6"
+
+  local before_java_home="$7"
+  local before_java_ver="$8"
+  local before_developer_dir="$9"
+  shift 9
+  local before_xcode_select="$1"
+  local before_xcodebuild="$2"
+  local before_dotnet="$3"
+
+  local after_java_home="${JAVA_HOME:-}"
+  local after_java_ver
+  after_java_ver="$(__dotnetenv_java_version_line)"
+
+  local after_developer_dir="${DEVELOPER_DIR:-}"
+  local after_xcode_select
+  after_xcode_select="$(__dotnetenv_xcode_select_path)"
+
+  local after_xcodebuild
+  after_xcodebuild="$(__dotnetenv_xcodebuild_version_line)"
+
+  local after_dotnet
+  after_dotnet="$(__dotnetenv_dotnet_version_line)"
+
+  print -r -- ""
+  print -r -- "Summary:"
+  print -r -- "  Mode: $mode"
+
+  if [[ -n "${DOTNETENV_LAST_XCODE_REQUIRED_VERSION:-}" ]]; then
+    print -r -- "  Required Xcode (from packs): ${DOTNETENV_LAST_XCODE_REQUIRED_VERSION}"
+  fi
+
+  if [[ -n "${DOTNETENV_LAST_XCODE_APP:-}" ]]; then
+    print -r -- "  Xcode app: ${DOTNETENV_LAST_XCODE_APP} (${DOTNETENV_LAST_XCODE_SOURCE:-unknown})"
+  fi
+
+  print -r -- "  JAVA_HOME: $(__dotnetenv_format_change "$before_java_home" "$after_java_home")"
+  print -r -- "  java: $(__dotnetenv_format_change "$before_java_ver" "$after_java_ver")"
+  print -r -- "  DEVELOPER_DIR: $(__dotnetenv_format_change "$before_developer_dir" "$after_developer_dir")"
+  print -r -- "  xcodebuild: $(__dotnetenv_format_change "$before_xcodebuild" "$after_xcodebuild")"
+  print -r -- "  xcode-select -p (global): $(__dotnetenv_format_change "$before_xcode_select" "$after_xcode_select")"
+  print -r -- "  dotnet: $(__dotnetenv_format_change "$before_dotnet" "$after_dotnet")"
+
+  print -r -- ""
+  print -r -- "Completed steps:"
+  if [[ "$did_dotnet_move" == "1" ]]; then
+    if [[ "$mode" == "dotnet9" ]]; then
+      print -r -- "  - .NET SDK move: disabled 10.* discovery"
+    else
+      print -r -- "  - .NET SDK move: enabled 10.* discovery"
+    fi
+  else
+    print -r -- "  - .NET SDK move: skipped (--no-dotnet-move)"
+  fi
+
+  if [[ "$select_xcode" == "1" ]]; then
+    print -r -- "  - xcode-select: updated system-wide"
+  else
+    print -r -- "  - xcode-select: skipped (--no-select-xcode)"
+  fi
+
+  if [[ "$did_cleanup" == "1" ]]; then
+    print -r -- "  - Cleanup: ran"
+    if [[ "$did_workload_restore" == "1" ]]; then
+      print -r -- "    - dotnet workload restore: ran"
+    else
+      print -r -- "    - dotnet workload restore: skipped (--no-workload-restore)"
+    fi
+    if [[ "$did_restore" == "1" ]]; then
+      print -r -- "    - dotnet restore: ran"
+    else
+      print -r -- "    - dotnet restore: skipped (--no-restore)"
+    fi
+    print -r -- "    - dotnet clean / delete bin+obj / delete *.csproj.user: attempted (see logs above)"
+  else
+    print -r -- "  - Cleanup: skipped (--no-cleanup)"
+  fi
+}
+
 __dotnetenv_apply() {
   local mode="$1"           # dotnet9 | dotnet10
   local select_xcode="$2"   # 0 | 1
@@ -1214,18 +1345,26 @@ __dotnetenv_apply() {
   fi
 
   local xcode_app=""
+  local xcode_source=""
   local auto_xcode="${DOTNETENV_XCODE_AUTO:-1}"
 
   if [[ "$mode" == "dotnet9" ]]; then
     __dotnetenv_pick_java_home "17" || return 1
-    xcode_app="${DOTNET9_XCODE_APP:-}"
+    if [[ -n "${DOTNET9_XCODE_APP:-}" ]]; then
+      xcode_app="${DOTNET9_XCODE_APP}"
+      xcode_source="env"
+    fi
   else
     __dotnetenv_pick_java_home "21" || return 1
-    xcode_app="${DOTNET10_XCODE_APP:-}"
+    if [[ -n "${DOTNET10_XCODE_APP:-}" ]]; then
+      xcode_app="${DOTNET10_XCODE_APP}"
+      xcode_source="env"
+    fi
   fi
 
   if [[ -z "${xcode_app:-}" && "$auto_xcode" == "1" ]]; then
     xcode_app="$(__dotnetenv_pick_xcode_app_auto "$root_dir" "$mode")" || return 1
+    xcode_source="auto"
   fi
 
   # Back-compat fallback if auto is disabled and no app was provided.
@@ -1235,7 +1374,12 @@ __dotnetenv_apply() {
     else
       xcode_app="/Applications/Xcode_26.1.app"
     fi
+    xcode_source="default"
   fi
+
+  DOTNETENV_LAST_MODE="$mode"
+  DOTNETENV_LAST_XCODE_APP="$xcode_app"
+  DOTNETENV_LAST_XCODE_SOURCE="$xcode_source"
 
   __dotnetenv_pick_xcode_dir "$xcode_app" || return 1
 

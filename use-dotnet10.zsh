@@ -9,6 +9,13 @@ SCRIPT_PATH="${(%):-%N}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)"
 source "$SCRIPT_DIR/dotnet-env-common.zsh"
 
+before_java_home="${JAVA_HOME:-}"
+before_java_ver="$(__dotnetenv_java_version_line)"
+before_developer_dir="${DEVELOPER_DIR:-}"
+before_xcode_select="$(__dotnetenv_xcode_select_path)"
+before_xcodebuild="$(__dotnetenv_xcodebuild_version_line)"
+before_dotnet="$(__dotnetenv_dotnet_version_line)"
+
 select_xcode=1
 do_dotnet_move=1
 do_cleanup=1
@@ -57,3 +64,17 @@ __dotnetenv_apply "dotnet10" "$select_xcode" "$(pwd)"
 if [[ "$do_cleanup" == "1" ]]; then
   __dotnetenv_repo_cleanup "$(pwd)" "$do_workload_restore" "$do_restore" || return 1
 fi
+
+__dotnetenv_print_run_summary \
+  "dotnet10" \
+  "$select_xcode" \
+  "$do_dotnet_move" \
+  "$do_cleanup" \
+  "$do_workload_restore" \
+  "$do_restore" \
+  "$before_java_home" \
+  "$before_java_ver" \
+  "$before_developer_dir" \
+  "$before_xcode_select" \
+  "$before_xcodebuild" \
+  "$before_dotnet"
