@@ -16,8 +16,8 @@ __dotnetenv_warn() {
 __dotnetenv_usage() {
   cat <<'EOF'
 Usage:
-  use-dotnet9 [--set-required-xcode <major.minor>] [--clear-required-xcode] [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
-  use-dotnet10 [--set-required-xcode <major.minor>] [--clear-required-xcode] [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
+  use-dotnet9 [--set-xcode [<major.minor>]] [--derive-xcode] [--clear-xcode] [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
+  use-dotnet10 [--set-xcode [<major.minor>]] [--derive-xcode] [--clear-xcode] [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
 
   (If you don't have those functions yet, define them in ~/.zshrc or ~/.zprofile.)
 
@@ -962,6 +962,8 @@ __dotnetenv_guess_apple_platform_major_from_installed_packs() {
 __dotnetenv_guess_required_xcode_version_from_installed_packs() {
   emulate -L zsh
   setopt null_glob
+  local XTRACEFD=2
+  set +x
 
   # mode: dotnet9 -> net9.0, dotnet10 -> net10.0
   local mode="$1"
@@ -1021,7 +1023,7 @@ __dotnetenv_guess_required_xcode_version_from_installed_packs() {
   done
 
   if (( best_major > 0 )); then
-    print -r -- "$best_major.$best_minor"
+    REPLY="$best_major.$best_minor"
     return 0
   fi
 
@@ -1030,6 +1032,8 @@ __dotnetenv_guess_required_xcode_version_from_installed_packs() {
 
 __dotnetenv_guess_required_xcode_version() {
   emulate -L zsh
+  local XTRACEFD=2
+  set +x
   local root_dir="$1"
   local mode="$2"
 
@@ -1044,7 +1048,11 @@ __dotnetenv_guess_required_xcode_version() {
 
   # Primary (most accurate): infer required Xcode major.minor from installed Apple packs.
   local required
-  required="$(__dotnetenv_guess_required_xcode_version_from_installed_packs "$mode" 2>/dev/null)" || required=""
+  if __dotnetenv_guess_required_xcode_version_from_installed_packs "$mode" 2>/dev/null; then
+    required="$REPLY"
+  else
+    required=""
+  fi
   if [[ -n "${required:-}" ]]; then
     DOTNETENV_LAST_XCODE_REQUIRED_SOURCE="packs"
     REPLY="$required"
@@ -1076,6 +1084,8 @@ __dotnetenv_guess_required_xcode_version() {
 
 __dotnetenv_pick_xcode_app_auto() {
   emulate -L zsh
+  local XTRACEFD=2
+  set +x
 
   local root_dir="$1"
   local mode="$2"
@@ -1412,7 +1422,7 @@ __dotnetenv_apply() {
     fi
   fi
 
-  if [[ -z "${xcode_app:-}" && "$auto_xcode" == "1" ]]; then
+  if [[ -z "${xcode_app:-}" && ( "$auto_xcode" == "1" || "$force_auto" == "1" ) ]]; then
     xcode_app="$(__dotnetenv_pick_xcode_app_auto "$root_dir" "$mode")" || return 1
     xcode_source="auto"
   fi

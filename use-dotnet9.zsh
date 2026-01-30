@@ -21,32 +21,126 @@ do_dotnet_move=1
 do_cleanup=1
 do_workload_restore=1
 do_restore=1
+xcode_default_version="16.4"
+xcode_behavior="default" # default | set | derive | clear
+xcode_set_version=""
 while (( $# > 0 )); do
   case "$1" in
     --help|-h)
       __dotnetenv_usage
       return 0 2>/dev/null || exit 0
       ;;
+    --set-xcode)
+      if [[ "$xcode_behavior" == "derive" ]]; then
+        __dotnetenv_die "Cannot combine --set-xcode and --derive-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      if [[ "$xcode_behavior" == "clear" ]]; then
+        __dotnetenv_die "Cannot combine --set-xcode and --clear-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+
+      xcode_behavior="set"
+      ver="$xcode_default_version"
+      if (( $# >= 2 )) && [[ "${2:-}" != --* ]]; then
+        ver="$2"
+        shift 2
+      else
+        shift 1
+      fi
+
+      xcode_set_version="$ver"
+      continue
+      ;;
+    --set-xcode=*)
+      if [[ "$xcode_behavior" == "derive" ]]; then
+        __dotnetenv_die "Cannot combine --set-xcode and --derive-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      if [[ "$xcode_behavior" == "clear" ]]; then
+        __dotnetenv_die "Cannot combine --set-xcode and --clear-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+
+      xcode_behavior="set"
+      ver="${1#*=}"
+      [[ -n "${ver:-}" ]] || ver="$xcode_default_version"
+      xcode_set_version="$ver"
+      shift
+      continue
+      ;;
+    --derive-xcode)
+      if [[ "$xcode_behavior" == "set" ]]; then
+        __dotnetenv_die "Cannot combine --set-xcode and --derive-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      if [[ "$xcode_behavior" == "clear" ]]; then
+        __dotnetenv_die "Cannot combine --derive-xcode and --clear-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      xcode_behavior="derive"
+      shift
+      continue
+      ;;
+    --clear-xcode)
+      if [[ "$xcode_behavior" == "set" || "$xcode_behavior" == "derive" ]]; then
+        __dotnetenv_die "Cannot combine --clear-xcode with other Xcode selection flags"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      xcode_behavior="clear"
+      shift
+      continue
+      ;;
+
+    # Back-compat aliases (deprecated):
     --set-required-xcode)
+      if [[ "$xcode_behavior" == "derive" ]]; then
+        __dotnetenv_die "Cannot combine --set-required-xcode and --derive-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      if [[ "$xcode_behavior" == "clear" ]]; then
+        __dotnetenv_die "Cannot combine --set-required-xcode and --clear-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      xcode_behavior="set"
       shift
       if [[ -z "${1:-}" ]]; then
         __dotnetenv_die "Missing value for --set-required-xcode (expected major.minor)"
         __dotnetenv_usage
         return 1 2>/dev/null || exit 1
       fi
-      export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9="$1"
-      export DOTNETENV_FORCE_XCODE_AUTO=1
-      export DOTNETENV_XCODE_AUTO=1
+      xcode_set_version="$1"
       ;;
     --set-required-xcode=*)
-      export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9="${1#*=}"
-      export DOTNETENV_FORCE_XCODE_AUTO=1
-      export DOTNETENV_XCODE_AUTO=1
+      if [[ "$xcode_behavior" == "derive" ]]; then
+        __dotnetenv_die "Cannot combine --set-required-xcode and --derive-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      if [[ "$xcode_behavior" == "clear" ]]; then
+        __dotnetenv_die "Cannot combine --set-required-xcode and --clear-xcode"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      xcode_behavior="set"
+      xcode_set_version="${1#*=}"
       ;;
     --clear-required-xcode)
-      unset DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9
-      unset DOTNETENV_FORCE_XCODE_AUTO
-      unset DOTNETENV_XCODE_AUTO
+      if [[ "$xcode_behavior" == "set" || "$xcode_behavior" == "derive" ]]; then
+        __dotnetenv_die "Cannot combine --clear-required-xcode with other Xcode selection flags"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      xcode_behavior="clear"
       ;;
     --select-xcode)
       select_xcode=1
@@ -77,6 +171,26 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+# Apply Xcode selection defaults for dotnet9.
+case "$xcode_behavior" in
+  default)
+    export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9="$xcode_default_version"
+    export DOTNETENV_FORCE_XCODE_AUTO=1
+    ;;
+  set)
+    export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9="${xcode_set_version:-$xcode_default_version}"
+    export DOTNETENV_FORCE_XCODE_AUTO=1
+    ;;
+  derive)
+    unset DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9
+    export DOTNETENV_FORCE_XCODE_AUTO=1
+    ;;
+  clear)
+    unset DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9
+    unset DOTNETENV_FORCE_XCODE_AUTO
+    ;;
+esac
 
 if [[ "$do_dotnet_move" == "1" ]]; then
   __dotnetenv_disable_dotnet10 || return 1
