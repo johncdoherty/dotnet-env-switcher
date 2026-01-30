@@ -16,8 +16,8 @@ __dotnetenv_warn() {
 __dotnetenv_usage() {
   cat <<'EOF'
 Usage:
-  use-dotnet9 [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
-  use-dotnet10 [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
+  use-dotnet9 [--set-required-xcode <major.minor>] [--clear-required-xcode] [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
+  use-dotnet10 [--set-required-xcode <major.minor>] [--clear-required-xcode] [--no-select-xcode] [--no-dotnet-move] [--no-cleanup] [--no-workload-restore] [--no-restore]
 
   (If you don't have those functions yet, define them in ~/.zshrc or ~/.zprofile.)
 
@@ -53,6 +53,8 @@ What it does:
 Configuration (optional):
   export DOTNET9_XCODE_APP="/Applications/Xcode_16.4.app"
   export DOTNET10_XCODE_APP="/Applications/Xcode_26.1.app"   # or your actual path
+  export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9="16.4"      # optional override for auto-selection
+  export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET10="26.2"     # optional override for auto-selection
   export DOTNETENV_DOTNET_ROOT="/usr/local/share/dotnet"       # dotnet install root
   export DOTNETENV_DISABLED_DIR="/usr/local/share/dotnet/.env-switcher-disabled"  # storage for moved folders
 
@@ -62,6 +64,29 @@ Notes:
   - Default behavior switches Xcode system-wide (recommended for VS Code).
       - Or start VS Code from that same terminal after running use-dotnet9/use-dotnet10.
 EOF
+}
+
+__dotnetenv_required_xcode_override_version() {
+  emulate -L zsh
+  local mode="$1"
+
+  # Priority: per-mode override, then global.
+  local v=""
+  if [[ "$mode" == "dotnet9" && -n "${DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9:-}" ]]; then
+    v="$DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9"
+  elif [[ "$mode" == "dotnet10" && -n "${DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET10:-}" ]]; then
+    v="$DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET10"
+  elif [[ -n "${DOTNETENV_REQUIRED_XCODE_VERSION:-}" ]]; then
+    v="$DOTNETENV_REQUIRED_XCODE_VERSION"
+  fi
+
+  [[ -n "${v:-}" ]] || return 1
+
+  local parsed
+  parsed="$(__dotnetenv__parse_major_minor "$v" 2>/dev/null)" || return 1
+  local major="${parsed%% *}"
+  local minor="${parsed#* }"
+  print -r -- "$major.$minor"
 }
 
 __dotnetenv_pick_sln_in_dir() {
@@ -1008,11 +1033,21 @@ __dotnetenv_guess_required_xcode_version() {
   local root_dir="$1"
   local mode="$2"
 
+  # Explicit override (most deterministic).
+  local override
+  override="$(__dotnetenv_required_xcode_override_version "$mode" 2>/dev/null)" || override=""
+  if [[ -n "${override:-}" ]]; then
+    DOTNETENV_LAST_XCODE_REQUIRED_SOURCE="override"
+    REPLY="$override"
+    return 0
+  fi
+
   # Primary (most accurate): infer required Xcode major.minor from installed Apple packs.
   local required
   required="$(__dotnetenv_guess_required_xcode_version_from_installed_packs "$mode" 2>/dev/null)" || required=""
   if [[ -n "${required:-}" ]]; then
-    print -r -- "$required"
+    DOTNETENV_LAST_XCODE_REQUIRED_SOURCE="packs"
+    REPLY="$required"
     return 0
   fi
 
@@ -1033,7 +1068,10 @@ __dotnetenv_guess_required_xcode_version() {
     return 1
   fi
 
-  print -r -- "$xcode_major.0"
+  DOTNETENV_LAST_XCODE_REQUIRED_SOURCE="heuristic"
+
+  REPLY="$xcode_major.0"
+  return 0
 }
 
 __dotnetenv_pick_xcode_app_auto() {
@@ -1042,7 +1080,11 @@ __dotnetenv_pick_xcode_app_auto() {
   local root_dir="$1"
   local mode="$2"
   local required_version
-  required_version="$(__dotnetenv_guess_required_xcode_version "$root_dir" "$mode" 2>/dev/null)" || required_version=""
+  if __dotnetenv_guess_required_xcode_version "$root_dir" "$mode" 2>/dev/null; then
+    required_version="$REPLY"
+  else
+    required_version=""
+  fi
   DOTNETENV_LAST_XCODE_REQUIRED_VERSION="$required_version"
   local required_major="" required_minor=""
   if [[ -n "${required_version:-}" ]]; then
@@ -1095,6 +1137,12 @@ __dotnetenv_pick_xcode_app_auto() {
     if [[ -n "${best_app:-}" ]]; then
       print -r -- "$best_app"
       return 0
+    fi
+
+    # If the user explicitly overrode the required version, be strict.
+    if [[ "${DOTNETENV_LAST_XCODE_REQUIRED_SOURCE:-}" == "override" ]]; then
+      __dotnetenv_die "Required Xcode ${required_major}.${required_minor} not found under /Applications or ~/Applications"
+      return 1
     fi
 
     __dotnetenv_warn "Could not find an installed Xcode ${required_major}.${required_minor}; falling back to newest installed Xcode"
@@ -1284,7 +1332,8 @@ __dotnetenv_print_run_summary() {
   print -r -- "  Mode: $mode"
 
   if [[ -n "${DOTNETENV_LAST_XCODE_REQUIRED_VERSION:-}" ]]; then
-    print -r -- "  Required Xcode (from packs): ${DOTNETENV_LAST_XCODE_REQUIRED_VERSION}"
+    local src="${DOTNETENV_LAST_XCODE_REQUIRED_SOURCE:-unknown}"
+    print -r -- "  Required Xcode: ${DOTNETENV_LAST_XCODE_REQUIRED_VERSION} (${src})"
   fi
 
   if [[ -n "${DOTNETENV_LAST_XCODE_APP:-}" ]]; then
@@ -1347,16 +1396,17 @@ __dotnetenv_apply() {
   local xcode_app=""
   local xcode_source=""
   local auto_xcode="${DOTNETENV_XCODE_AUTO:-1}"
+  local force_auto="${DOTNETENV_FORCE_XCODE_AUTO:-0}"
 
   if [[ "$mode" == "dotnet9" ]]; then
     __dotnetenv_pick_java_home "17" || return 1
-    if [[ -n "${DOTNET9_XCODE_APP:-}" ]]; then
+    if [[ "$force_auto" != "1" && -n "${DOTNET9_XCODE_APP:-}" ]]; then
       xcode_app="${DOTNET9_XCODE_APP}"
       xcode_source="env"
     fi
   else
     __dotnetenv_pick_java_home "21" || return 1
-    if [[ -n "${DOTNET10_XCODE_APP:-}" ]]; then
+    if [[ "$force_auto" != "1" && -n "${DOTNET10_XCODE_APP:-}" ]]; then
       xcode_app="${DOTNET10_XCODE_APP}"
       xcode_source="env"
     fi

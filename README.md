@@ -189,11 +189,18 @@ Once you’ve added the functions in your shell profile:
 Flags:
 
 - `--help` / `-h`: print usage
+- `--set-required-xcode <major.minor>`: override the required Xcode version used by auto-selection for this run (forces auto-selection even if `DOTNET10_XCODE_APP`/`DOTNET9_XCODE_APP` is set; errors if that Xcode isn’t installed)
+- `--clear-required-xcode`: clear the per-toolchain override set by `--set-required-xcode` (does not affect a global override)
 - `--no-select-xcode`: do not run `sudo xcode-select -s ...`
 - `--no-dotnet-move`: do not move `.NET 10` SDK/manifests folders (only switches JDK/Xcode)
 - `--no-cleanup`: skip repo cleanup (no deletes, no `dotnet clean`, no workload restore)
 - `--no-workload-restore`: run cleanup but skip `dotnet workload restore`
 - `--no-restore`: run cleanup but skip `dotnet restore`
+
+You can also set these in your shell profile if you want a persistent override:
+
+- `export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET9="16.4"`
+- `export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET10="26.2"`
 
 ### Optional configuration for .NET folder moving
 

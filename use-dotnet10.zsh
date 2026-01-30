@@ -21,11 +21,32 @@ do_dotnet_move=1
 do_cleanup=1
 do_workload_restore=1
 do_restore=1
-for arg in "$@"; do
-  case "$arg" in
+while (( $# > 0 )); do
+  case "$1" in
     --help|-h)
       __dotnetenv_usage
       return 0 2>/dev/null || exit 0
+      ;;
+    --set-required-xcode)
+      shift
+      if [[ -z "${1:-}" ]]; then
+        __dotnetenv_die "Missing value for --set-required-xcode (expected major.minor)"
+        __dotnetenv_usage
+        return 1 2>/dev/null || exit 1
+      fi
+      export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET10="$1"
+      export DOTNETENV_FORCE_XCODE_AUTO=1
+      export DOTNETENV_XCODE_AUTO=1
+      ;;
+    --set-required-xcode=*)
+      export DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET10="${1#*=}"
+      export DOTNETENV_FORCE_XCODE_AUTO=1
+      export DOTNETENV_XCODE_AUTO=1
+      ;;
+    --clear-required-xcode)
+      unset DOTNETENV_REQUIRED_XCODE_VERSION_DOTNET10
+      unset DOTNETENV_FORCE_XCODE_AUTO
+      unset DOTNETENV_XCODE_AUTO
       ;;
     --select-xcode)
       select_xcode=1
@@ -49,11 +70,12 @@ for arg in "$@"; do
       do_restore=0
       ;;
     *)
-      __dotnetenv_die "Unknown argument: $arg"
+      __dotnetenv_die "Unknown argument: $1"
       __dotnetenv_usage
       return 1 2>/dev/null || exit 1
       ;;
   esac
+  shift
 done
 
 if [[ "$do_dotnet_move" == "1" ]]; then
