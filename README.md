@@ -14,11 +14,12 @@ Non-goals:
 - This does **not** permanently modify your shell configuration; it’s meant to be run via `source` so environment variables apply to the current shell.
 
 - `use-dotnet9.zsh`: sets `JAVA_HOME` to JDK 17 and `DEVELOPER_DIR` to Xcode 16.4
-- `use-dotnet10.zsh`: sets `JAVA_HOME` to JDK 21 and `DEVELOPER_DIR` to Xcode 26.1 (override as needed)
+- `use-dotnet10.zsh`: sets `JAVA_HOME` to JDK 21 and `DEVELOPER_DIR` to Xcode 26.2 (override as needed)
 
 Xcode selection notes:
 
-- By default, Xcode is selected automatically based on what the repo appears to require (see “About Xcode switching” below).
+- By default, `use-dotnet9` behaves like `--set-xcode 16.4` and `use-dotnet10` behaves like `--set-xcode 26.2`.
+- If you want “infer based on what the repo appears to require”, pass `--derive-xcode` (see “About Xcode switching” below).
 - You can still force a specific Xcode per toolchain using `DOTNET9_XCODE_APP` / `DOTNET10_XCODE_APP`.
 
 Additionally:
@@ -43,7 +44,7 @@ use-dotnet10() { source "$DOTNET_ENV_SWITCHER_DIR/use-dotnet10.zsh" "$@"; }
 #
 # If you want to pin a specific Xcode app per toolchain:
 # export DOTNET9_XCODE_APP="/Applications/Xcode_16.4.app"
-# export DOTNET10_XCODE_APP="/Applications/Xcode_26.1.app"
+# export DOTNET10_XCODE_APP="/Applications/Xcode_26.2.app"
 ```
 
 Common usage (Typically run from a .NET solution folder in VSCode):
@@ -128,7 +129,7 @@ Then either restart your terminal, or run `source ~/.zshrc`.
 If you want to force a specific Xcode app (instead of auto selection), set these in your `~/.zshrc`:
 
 - `export DOTNET9_XCODE_APP="/Applications/Xcode_16.4.app"`
-- `export DOTNET10_XCODE_APP="/Applications/Xcode_26.1.app"`  (or your actual path)
+- `export DOTNET10_XCODE_APP="/Applications/Xcode_26.2.app"`  (or your actual path)
 
 (Use whatever names you have installed.)
 
@@ -208,6 +209,84 @@ Default: `use-dotnet9` behaves like `--set-xcode 16.4` unless you pass `--derive
 
 Note: `--set-xcode` and `--derive-xcode` are mutually exclusive.
 
+### Flowcharts
+
+These are high-level flowcharts of what each script does. (Some steps are conditional based on flags like `--no-select-xcode`, `--no-dotnet-move`, and `--no-cleanup`.)
+
+#### `use-dotnet9`
+
+```mermaid
+flowchart TD
+  A([source use-dotnet9.zsh]) --> B[Parse flags]
+  B -->|--help| H[Print usage + return]
+  B --> C{Xcode mode?}
+
+  C -->|--clear-xcode| C0[Clear shell override]
+  C0 --> C
+  C -->|--derive-xcode| D[Derive required Xcode from packs/heuristics]
+  C -->|--set-xcode or default| E[Use required Xcode: provided or default 16.4]
+
+  D --> F[Pick Xcode app auto]
+  E --> F
+  F -->|required version not installed| X[Error + return]
+  F -->|success| G[Export DEVELOPER_DIR]
+  G --> J[Set JAVA_HOME to JDK 17 + prefix PATH]
+
+  J --> K{Run xcode-select?}
+  K -->|default| K1[sudo xcode-select -s DEVELOPER_DIR]
+  K -->|--no-select-xcode| K2[Skip xcode-select]
+
+  K1 --> L{Move .NET 10 SDK folders?}
+  K2 --> L
+  L -->|default| L1[Disable .NET 10 SDK visibility]
+  L -->|--no-dotnet-move| L2[Skip SDK folder moves]
+
+  L1 --> M{Cleanup repo?}
+  L2 --> M
+  M -->|default| M1[dotnet clean + workload restore + restore + delete bin/obj]
+  M -->|--no-cleanup| M2[Skip cleanup]
+
+  M1 --> Z[Print summary]
+  M2 --> Z
+```
+
+#### `use-dotnet10`
+
+```mermaid
+flowchart TD
+  A([source use-dotnet10.zsh]) --> B[Parse flags]
+  B -->|--help| H[Print usage + return]
+  B --> C{Xcode mode?}
+
+  C -->|--clear-xcode| C0[Clear shell override]
+  C0 --> C
+  C -->|--derive-xcode| D[Derive required Xcode from packs/heuristics]
+  C -->|--set-xcode or default| E[Use required Xcode: provided or default 26.2]
+
+  D --> F[Pick Xcode app auto]
+  E --> F
+  F -->|required version not installed| X[Error + return]
+  F -->|success| G[Export DEVELOPER_DIR]
+  G --> J[Set JAVA_HOME to JDK 21 + prefix PATH]
+
+  J --> K{Run xcode-select?}
+  K -->|default| K1[sudo xcode-select -s DEVELOPER_DIR]
+  K -->|--no-select-xcode| K2[Skip xcode-select]
+
+  K1 --> L{Move .NET 10 SDK folders?}
+  K2 --> L
+  L -->|default| L1[Enable .NET 10 SDK visibility]
+  L -->|--no-dotnet-move| L2[Skip SDK folder moves]
+
+  L1 --> M{Cleanup repo?}
+  L2 --> M
+  M -->|default| M1[dotnet clean + workload restore + restore + delete bin/obj]
+  M -->|--no-cleanup| M2[Skip cleanup]
+
+  M1 --> Z[Print summary]
+  M2 --> Z
+```
+
 ### Optional configuration for .NET folder moving
 
 If your dotnet install root is not `/usr/local/share/dotnet`, or you want to control where the moved folders are stored:
@@ -263,8 +342,8 @@ If you do **not** set `DOTNET9_XCODE_APP` / `DOTNET10_XCODE_APP` and `DOTNETENV_
 
 - Look for installed Xcodes under `/Applications` (and `~/Applications`) matching `Xcode*.app`.
 - Prefer to infer the required Xcode **major.minor** from installed Apple packs for the current toolchain:
-	- Looks for pack folders like `packs/Microsoft.iOS.Sdk.net10.0_26.1/*` and `packs/Microsoft.MacCatalyst.Sdk.net10.0_26.1/*`.
-	- This matches what the Apple packs themselves enforce (e.g. “.NET for iOS (26.1.x) requires Xcode 26.1”).
+		- Looks for pack folders like `packs/Microsoft.iOS.Sdk.net10.0_26.2/*` and `packs/Microsoft.MacCatalyst.Sdk.net10.0_26.2/*`.
+		- This matches what the Apple packs themselves enforce (e.g. “.NET for iOS (26.2.x) requires Xcode 26.2”).
 - If pack-based inference fails, fall back to a best-effort heuristic:
 	- If there is a preferred `*.sln`, enumerate its projects and scan non-UnitTests `*.csproj` for TFMs like `net9.0-ios18.0` / `net9.0-maccatalyst18.0`.
 	- Map platform major to Xcode major using `xcodeMajor = platformMajor - 2` (e.g. iOS 18 → Xcode 16).
